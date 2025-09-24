@@ -1,0 +1,23 @@
+[2025-09-24T08:16:48.421-0300] {local_task_job_runner.py:123} INFO - ::group::Pre task execution logs
+[2025-09-24T08:16:48.439-0300] {taskinstance.py:2631} INFO - Dependencies all met for dep_context=non-requeueable deps ti=<TaskInstance: WorkOrders.WorkOrders manual__2025-09-24T11:16:46.463097+00:00 [queued]>
+[2025-09-24T08:16:48.445-0300] {taskinstance.py:2631} INFO - Dependencies all met for dep_context=requeueable deps ti=<TaskInstance: WorkOrders.WorkOrders manual__2025-09-24T11:16:46.463097+00:00 [queued]>
+[2025-09-24T08:16:48.445-0300] {taskinstance.py:2884} INFO - Starting attempt 1 of 1
+[2025-09-24T08:16:48.519-0300] {taskinstance.py:2907} INFO - Executing <Task(_PythonDecoratedOperator): WorkOrders> on 2025-09-24 11:16:46.463097+00:00
+[2025-09-24T08:16:48.530-0300] {warnings.py:112} WARNING - /home/***/.local/lib/python3.12/site-packages/***/task/task_runner/standard_task_runner.py:70: DeprecationWarning: This process (pid=2267) is multi-threaded, use of fork() may lead to deadlocks in the child.
+  pid = os.fork()
+
+[2025-09-24T08:16:48.532-0300] {standard_task_runner.py:72} INFO - Started process 2269 to run task
+[2025-09-24T08:16:48.532-0300] {standard_task_runner.py:104} INFO - Running: ['***', 'tasks', 'run', 'WorkOrders', 'WorkOrders', 'manual__2025-09-24T11:16:46.463097+00:00', '--job-id', '16', '--raw', '--subdir', 'DAGS_FOLDER/Example.py', '--cfg-path', '/tmp/tmp390xr1_l']
+[2025-09-24T08:16:48.534-0300] {standard_task_runner.py:105} INFO - Job 16: Subtask WorkOrders
+[2025-09-24T08:16:48.585-0300] {task_command.py:467} INFO - Running <TaskInstance: WorkOrders.WorkOrders manual__2025-09-24T11:16:46.463097+00:00 [running]> on host 29b76035fcd4
+[2025-09-24T08:16:48.677-0300] {taskinstance.py:3157} INFO - Exporting env vars: AIRFLOW_CTX_DAG_OWNER='***' AIRFLOW_CTX_DAG_ID='WorkOrders' AIRFLOW_CTX_TASK_ID='WorkOrders' AIRFLOW_CTX_EXECUTION_DATE='2025-09-24T11:16:46.463097+00:00' AIRFLOW_CTX_TRY_NUMBER='1' AIRFLOW_CTX_DAG_RUN_ID='manual__2025-09-24T11:16:46.463097+00:00'
+[2025-09-24T08:16:48.678-0300] {taskinstance.py:740} INFO - ::endgroup::
+[2025-09-24T08:16:53.312-0300] {__init__.py:49} INFO - file_cache is only supported with oauth2client<4.0.0
+[2025-09-24T08:16:54.839-0300] {logging_mixin.py:190} INFO - 0 novas linhas para inserir.
+[2025-09-24T08:16:54.840-0300] {logging_mixin.py:190} INFO - Nada a inserir. Encerrando.
+[2025-09-24T08:16:54.840-0300] {python.py:240} INFO - Done. Returned value was: None
+[2025-09-24T08:16:54.851-0300] {taskinstance.py:349} INFO - ::group::Post task execution logs
+[2025-09-24T08:16:54.851-0300] {taskinstance.py:361} INFO - Marking task as SUCCESS. dag_id=WorkOrders, task_id=WorkOrders, run_id=manual__2025-09-24T11:16:46.463097+00:00, execution_date=20250924T111646, start_date=20250924T111648, end_date=20250924T111654
+[2025-09-24T08:16:54.897-0300] {local_task_job_runner.py:266} INFO - Task exited with return code 0
+[2025-09-24T08:16:54.909-0300] {taskinstance.py:3924} INFO - 0 downstream tasks scheduled from follow-on schedule check
+[2025-09-24T08:16:54.911-0300] {local_task_job_runner.py:245} INFO - ::endgroup::
