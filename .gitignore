@@ -1,0 +1,3 @@
+# Ignorar tokens e credenciais
+dags/Tokens/
+*.json
