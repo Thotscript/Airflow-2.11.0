@@ -323,7 +323,7 @@ SP_TZ = pendulum.timezone("America/Sao_Paulo")
 with DAG(
     dag_id="WorkOrders",  # Nome da dag (task/tarefa)
     start_date=pendulum.datetime(2025, 9, 23, 8, 0, tz=SP_TZ),
-    schedule="15 9 * * *",
+    schedule="0 8,18 * * *",
     catchup=False,
     tags=["WorkOrders - OVH"],
 ) as dag:
