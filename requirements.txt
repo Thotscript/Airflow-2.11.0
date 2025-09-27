@@ -38,3 +38,4 @@ dask==2024.9.0
 # --- Utils ---
 tqdm==4.66.5
 pyyaml==6.0.2
+mysql-connector-python
