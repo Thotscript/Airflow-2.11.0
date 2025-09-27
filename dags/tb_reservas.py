@@ -31,7 +31,8 @@ def main():
     }
 
     response = requests.post(url, data=json.dumps(data_payload), headers=headers)
-
+    print("Resposta:", response.status_code, response.text[:500])
+    
     data_dict = json.loads(response.content)
 
     df_list = []
