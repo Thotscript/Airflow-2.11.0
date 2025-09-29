@@ -1,3 +1,6 @@
 # Ignorar tokens e credenciais
 dags/Tokens/
 *.json
+
+# Logs
+logs/
