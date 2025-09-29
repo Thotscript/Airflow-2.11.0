@@ -55,7 +55,7 @@ def main():
     ## Conexao com o mysql
 
     conn = mysql.connector.connect(
-        host="localhost",
+        host="host.docker.internal",
         user="root",
         password="Tfl1234@",
         database="tfl_silver"
