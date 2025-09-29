@@ -3,6 +3,7 @@ import requests
 import json
 import mysql.connector
 import pendulum
+import numpy as np
 from airflow import DAG
 from airflow.decorators import task
 
@@ -42,24 +43,16 @@ def main():
     df_full = pd.concat(df_list, ignore_index=True)
     df_full = df_full.drop_duplicates(subset=['id'])
 
-    # Adiciona coluna Administradora (igual ao código original)
+    # Adiciona coluna Administradora
     df_full['Administradora'] = "ONE VACATION HOME"
 
-    # LIMPEZA AGRESSIVA DE COLUNAS
-    print(f"Colunas ANTES da limpeza: {list(df_full.columns)}")
-    
-    # Remove colunas com nomes None/NaN
+    # LIMPEZA DE COLUNAS
     df_full = df_full.loc[:, df_full.columns.notna()]
-    
-    # Converte todos os nomes para string
     df_full.columns = [str(col) for col in df_full.columns]
-    
-    # Remove colunas que são literalmente 'nan', 'None', ou vazias
     valid_columns = [col for col in df_full.columns 
                      if col not in ['nan', 'None', '', 'NaN', 'NAN']]
     df_full = df_full[valid_columns]
     
-    # Limpa caracteres especiais dos nomes das colunas
     df_full.columns = (df_full.columns
                        .str.strip()
                        .str.replace(' ', '_', regex=False)
@@ -70,9 +63,15 @@ def main():
                        .str.replace('[', '', regex=False)
                        .str.replace(']', '', regex=False))
     
-    print(f"Colunas DEPOIS da limpeza: {list(df_full.columns)}")
     print(f"Total de colunas: {len(df_full.columns)}")
     print(f"Total de linhas: {len(df_full)}")
+
+    # LIMPEZA DOS DADOS (VALORES) - AQUI ESTÁ A CORREÇÃO PRINCIPAL
+    # Substitui NaN, None e strings 'nan' por None
+    df_full = df_full.replace({np.nan: None, 'nan': None, 'NaN': None, 'None': None, '': None})
+    
+    # Garante que não há mais NaN
+    df_full = df_full.where(pd.notna(df_full), None)
 
     ## Conexao com o mysql
     conn = mysql.connector.connect(
@@ -85,24 +84,18 @@ def main():
     cursor = conn.cursor()
     tb_name = "tb_reservas"
 
-    # Drop e recria a tabela com todas as colunas como TEXT
+    # Drop e recria a tabela
     cursor.execute(f"DROP TABLE IF EXISTS {tb_name}")
 
     cols = ", ".join([f"`{c}` TEXT" for c in df_full.columns])
-    create_table_sql = f"CREATE TABLE {tb_name} ({cols})"
-    print(f"SQL CREATE TABLE: {create_table_sql[:200]}...")  # Debug
-    cursor.execute(create_table_sql)
-
-    # Substitui NaN por None (para não dar erro no INSERT)
-    df_full = df_full.where(pd.notna(df_full), None)
+    cursor.execute(f"CREATE TABLE {tb_name} ({cols})")
 
     # Monta INSERT
     cols_str = ", ".join([f"`{c}`" for c in df_full.columns])
     placeholders = ", ".join(["%s"] * len(df_full.columns))
     insert_sql = f"INSERT INTO {tb_name} ({cols_str}) VALUES ({placeholders})"
-    print(f"SQL INSERT: {insert_sql[:200]}...")  # Debug
 
-    # Insere em lotes para melhor performance
+    # Insere em lotes
     batch_size = 1000
     total_inserted = 0
     
