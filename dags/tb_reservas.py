@@ -1,8 +1,3 @@
-#Funcionalidade: Utiliza a API do streamline para retornar todas as reservas existentes 
-#Bases geradas: tb_reservas
-
-#Código
-
 import pandas as pd
 import requests
 import json
@@ -50,13 +45,33 @@ def main():
     # Adiciona coluna Administradora (igual ao código original)
     df_full['Administradora'] = "ONE VACATION HOME"
 
-    # NOVO: Limpar nomes de colunas
-    df_full = df_full.loc[:, df_full.columns.notna()]
-    df_full.columns = df_full.columns.astype(str)
-    df_full = df_full.loc[:, df_full.columns != 'nan']
-    df_full.columns = df_full.columns.str.strip().str.replace(' ', '_').str.replace('.', '_')
+    # LIMPEZA AGRESSIVA DE COLUNAS
+    print(f"Colunas ANTES da limpeza: {list(df_full.columns)}")
     
-    print(f"Colunas: {list(df_full.columns)}")
+    # Remove colunas com nomes None/NaN
+    df_full = df_full.loc[:, df_full.columns.notna()]
+    
+    # Converte todos os nomes para string
+    df_full.columns = [str(col) for col in df_full.columns]
+    
+    # Remove colunas que são literalmente 'nan', 'None', ou vazias
+    valid_columns = [col for col in df_full.columns 
+                     if col not in ['nan', 'None', '', 'NaN', 'NAN']]
+    df_full = df_full[valid_columns]
+    
+    # Limpa caracteres especiais dos nomes das colunas
+    df_full.columns = (df_full.columns
+                       .str.strip()
+                       .str.replace(' ', '_', regex=False)
+                       .str.replace('.', '_', regex=False)
+                       .str.replace('-', '_', regex=False)
+                       .str.replace('(', '', regex=False)
+                       .str.replace(')', '', regex=False)
+                       .str.replace('[', '', regex=False)
+                       .str.replace(']', '', regex=False))
+    
+    print(f"Colunas DEPOIS da limpeza: {list(df_full.columns)}")
+    print(f"Total de colunas: {len(df_full.columns)}")
     print(f"Total de linhas: {len(df_full)}")
 
     ## Conexao com o mysql
@@ -74,7 +89,9 @@ def main():
     cursor.execute(f"DROP TABLE IF EXISTS {tb_name}")
 
     cols = ", ".join([f"`{c}` TEXT" for c in df_full.columns])
-    cursor.execute(f"CREATE TABLE {tb_name} ({cols})")
+    create_table_sql = f"CREATE TABLE {tb_name} ({cols})"
+    print(f"SQL CREATE TABLE: {create_table_sql[:200]}...")  # Debug
+    cursor.execute(create_table_sql)
 
     # Substitui NaN por None (para não dar erro no INSERT)
     df_full = df_full.where(pd.notna(df_full), None)
@@ -83,6 +100,7 @@ def main():
     cols_str = ", ".join([f"`{c}`" for c in df_full.columns])
     placeholders = ", ".join(["%s"] * len(df_full.columns))
     insert_sql = f"INSERT INTO {tb_name} ({cols_str}) VALUES ({placeholders})"
+    print(f"SQL INSERT: {insert_sql[:200]}...")  # Debug
 
     # Insere em lotes para melhor performance
     batch_size = 1000
