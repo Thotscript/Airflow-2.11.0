@@ -10,6 +10,8 @@ import time
 from airflow import DAG
 from airflow.decorators import task
 
+import pendulum
+
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
@@ -393,44 +395,54 @@ def create_depara_casas():
 # TASKS DO AIRFLOW
 # ============================================================================
 
-@task
-def extract_sheets_data():
-    """Extrai dados do Google Sheets"""
-    return load_all_sheets()
+SP_TZ = pendulum.timezone("America/Sao_Paulo")
+
+with DAG(
+    dag_id="OVH-tb_deparas",
+    start_date=pendulum.datetime(2025, 9, 23, 8, 0, tz=SP_TZ),
+    schedule="0 5 * * *",
+    catchup=False,
+    tags=["Tabelas - OVH"],
+) as dag:
+
+    @task
+    def extract_sheets_data():
+        """Extrai dados do Google Sheets"""
+        return load_all_sheets()
 
 
-@task
-def extract_streamline_data(dfs: dict):
-    """Extrai dados do Streamline"""
-    df_administradora = dfs[ADMINISTRADORA]
-    property_list = get_property_data_from_streamline(df_administradora)
-    return property_list
+    @task
+    def extract_streamline_data(dfs: dict):
+        """Extrai dados do Streamline"""
+        df_administradora = dfs[ADMINISTRADORA]
+        property_list = get_property_data_from_streamline(df_administradora)
+        return property_list
 
 
-@task
-def process_and_save_tables(dfs: dict, property_list: pd.DataFrame):
-    """Processa e salva todas as tabelas no MySQL"""
-    
-    print("\n💾 Salvando tabelas no MySQL...")
-    
-    # 1. Salvar tabelas de depara do Google Sheets
-    save_to_mysql(dfs[MAKE_TYPE], 'make_type_id', if_exists='replace')
-    save_to_mysql(dfs[STATUS_VENDA], 'status_vendas', if_exists='replace')
-    save_to_mysql(dfs[CANAIS], 'depara_canais', if_exists='replace')
-    save_to_mysql(dfs[NON_RENTING], 'tb_non_renting', if_exists='replace')
-    
-    # 2. Salvar dados do Streamline
-    save_to_mysql(property_list, 'property_list_wordpress', if_exists='replace')
-    save_to_mysql(property_list, 'property_list_wordpress_append', if_exists='append')
-    
-    # 3. Criar e salvar calendário
-    calendario = create_calendario(dfs[DIA_AJUSTADO])
-    save_to_mysql(calendario, 'tb_calendario', if_exists='replace')
-    
-    # 4. Criar tabela de depara de casas
-    create_depara_casas()
-    
-    print("\n✅ Todas as tabelas foram processadas e salvas com sucesso!")
+    @task
+    def process_and_save_tables(dfs: dict, property_list: pd.DataFrame):
+        """Processa e salva todas as tabelas no MySQL"""
+        
+        print("\n💾 Salvando tabelas no MySQL...")
+        
+        # 1. Salvar tabelas de depara do Google Sheets
+        save_to_mysql(dfs[MAKE_TYPE], 'make_type_id', if_exists='replace')
+        save_to_mysql(dfs[STATUS_VENDA], 'status_vendas', if_exists='replace')
+        save_to_mysql(dfs[CANAIS], 'depara_canais', if_exists='replace')
+        save_to_mysql(dfs[NON_RENTING], 'tb_non_renting', if_exists='replace')
+        
+        # 2. Salvar dados do Streamline
+        save_to_mysql(property_list, 'property_list_wordpress', if_exists='replace')
+        save_to_mysql(property_list, 'property_list_wordpress_append', if_exists='append')
+        
+        # 3. Criar e salvar calendário
+        calendario = create_calendario(dfs[DIA_AJUSTADO])
+        save_to_mysql(calendario, 'tb_calendario', if_exists='replace')
+        
+        # 4. Criar tabela de depara de casas
+        create_depara_casas()
+        
+        print("\n✅ Todas as tabelas foram processadas e salvas com sucesso!")
 
 
 # ============================================================================
