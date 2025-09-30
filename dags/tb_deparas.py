@@ -27,7 +27,7 @@ MYSQL_CONFIG = {
     'host': 'host.docker.internal',
     'user': 'root',
     'password': 'Tfl1234@',
-    'database': 'tfl_silver'
+    'database': 'ovh_silver'
 }
 
 # Planilha Google Sheets
@@ -440,14 +440,14 @@ with DAG(
         print("\n💾 Salvando tabelas no MySQL...")
         
         # 1. Salvar tabelas de depara do Google Sheets
-        save_to_mysql(dfs[MAKE_TYPE], 'make_type_id', if_exists='replace')
-        save_to_mysql(dfs[STATUS_VENDA], 'status_vendas', if_exists='replace')
-        save_to_mysql(dfs[CANAIS], 'depara_canais', if_exists='replace')
+        save_to_mysql(dfs[MAKE_TYPE], 'tb_make_type_id', if_exists='replace')
+        save_to_mysql(dfs[STATUS_VENDA], 'tb_status_vendas', if_exists='replace')
+        save_to_mysql(dfs[CANAIS], 'tb_depara_canais', if_exists='replace')
         save_to_mysql(dfs[NON_RENTING], 'tb_non_renting', if_exists='replace')
         
         # 2. Salvar dados do Streamline
-        save_to_mysql(property_list, 'property_list_wordpress', if_exists='replace')
-        save_to_mysql(property_list, 'property_list_wordpress_append', if_exists='append')
+        save_to_mysql(property_list, 'tb_property_list_wordpress', if_exists='replace')
+        save_to_mysql(property_list, 'tb_property_list_wordpress_append', if_exists='append')
         
         # 3. Criar e salvar calendário
         calendario = create_calendario(dfs[DIA_AJUSTADO])

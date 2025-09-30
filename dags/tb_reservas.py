@@ -78,7 +78,7 @@ def main():
         host="host.docker.internal",
         user="root",
         password="Tfl1234@",
-        database="tfl_silver"
+        database="ovh_silver"
     )
 
     cursor = conn.cursor()
