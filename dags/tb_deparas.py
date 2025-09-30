@@ -444,6 +444,10 @@ with DAG(
         
         print("\n✅ Todas as tabelas foram processadas e salvas com sucesso!")
 
+    sheets_data = extract_sheets_data()
+    streamline_data = extract_streamline_data(sheets_data)
+    process_and_save_tables(sheets_data, streamline_data)
+
 
 # ============================================================================
 # EXECUÇÃO DIRETA (FORA DO AIRFLOW)
