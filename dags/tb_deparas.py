@@ -310,13 +310,27 @@ def create_calendario(df_dia_ajustado: pd.DataFrame) -> pd.DataFrame:
     calendario['Ano Comparação'] = 'Y-' + (data_ajustada.year - calendario['ano']).astype(str)
     calendario['Hoje'] = data_ajustada
     
-    # Formata data para merge
-    calendario['data_str'] = calendario['data'].dt.strftime('%d-%m-%Y')
+    # Formata data para merge ANTES de fazer o merge
+    calendario['data_formatada'] = calendario['data'].dt.strftime('%d-%m-%Y')
     
     # Realiza o merge com dia_ajustado
     if not df_dia_ajustado.empty and 'data' in df_dia_ajustado.columns:
-        calendario = pd.merge(calendario, df_dia_ajustado, left_on='data_str', right_on='data', how='left')
-        calendario.drop('data_str', axis=1, inplace=True)
+        # Renomeia a coluna 'data' de df_dia_ajustado para evitar conflito
+        df_dia_ajustado_copy = df_dia_ajustado.copy()
+        df_dia_ajustado_copy.rename(columns={'data': 'data_ajustada_str'}, inplace=True)
+        
+        calendario = pd.merge(
+            calendario, 
+            df_dia_ajustado_copy, 
+            left_on='data_formatada', 
+            right_on='data_ajustada_str', 
+            how='left'
+        )
+        
+        # Remove colunas auxiliares
+        calendario.drop(['data_formatada', 'data_ajustada_str'], axis=1, inplace=True, errors='ignore')
+    else:
+        calendario.drop('data_formatada', axis=1, inplace=True, errors='ignore')
     
     # Calcula flags
     def calculate_flags(row):
@@ -334,7 +348,7 @@ def create_calendario(df_dia_ajustado: pd.DataFrame) -> pd.DataFrame:
     
     calendario = calendario.apply(calculate_flags, axis=1)
     
-    # Formata data final
+    # Formata data final - AGORA a coluna 'data' ainda existe
     calendario['data'] = calendario['data'].dt.strftime('%d-%m-%Y')
     
     print(f"✓ Calendário criado: {len(calendario)} dias")
