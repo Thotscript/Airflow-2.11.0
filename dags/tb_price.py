@@ -89,3 +89,5 @@ with DAG(
     @task()
     def tb_price():
         main()
+        
+    tb_price()
