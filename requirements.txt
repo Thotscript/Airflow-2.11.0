@@ -1,7 +1,7 @@
 # --- Data manipulation ---
-pandas==2.1.4
-numpy==1.26.4
-pyarrow==16.1.0
+pandas
+numpy
+pyarrow
 
 # --- Google Sheets & Drive API ---
 google-api-python-client
@@ -12,30 +12,31 @@ gspread
 gspread-dataframe
 
 # --- Excel files ---
-openpyxl==3.1.5
-xlrd==2.0.1
-xlsxwriter==3.2.0
-pyxlsb==1.0.10
+openpyxl
+xlrd
+XlsxWriter
+pyxlsb
 
 # --- HTTP & Web Scraping ---
-requests==2.32.3
-beautifulsoup4==4.12.3
-lxml==5.2.2    # usa wheel manylinux; ok
+requests
+beautifulsoup4
+lxml
 
 # --- Browser Automation ---
-selenium==4.25.0
-playwright==1.48.0    # ok (os browsers são baixados só no runtime via `playwright install`)
+selenium
+playwright   # lembre de rodar: playwright install
 
 # --- Pipelines & Databases ---
-SQLAlchemy==2.0.35
-psycopg2-binary==2.9.9
-apache-airflow-providers-google==10.20.0
-dask==2024.9.0
-PyMySQL==1.1.1
-apache-airflow-providers-mysql==5.7.2
+SQLAlchemy
+psycopg2-binary
+apache-airflow-providers-google
+dask
+PyMySQL
+apache-airflow-providers-mysql
 
 # --- Utils ---
-tqdm==4.66.5
-pyyaml==6.0.2
-# Se optar por mysql-connector em vez de PyMySQL, troque no seu código a URL do engine.
+tqdm
+pyyaml
+
+# driver alternativo (use em vez de PyMySQL e troque a URL para mysql+mysqlconnector://)
 mysql-connector-python
