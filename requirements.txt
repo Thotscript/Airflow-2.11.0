@@ -12,7 +12,7 @@ google-auth==2.35.0
 google-auth-oauthlib==1.2.1
 google-auth-httplib2==0.2.0
 gspread==6.1.2
-gspread-dataframe==4.0.0     # Versão corrigida - era 3.4.2
+gspread-dataframe==4.0.0
 
 # --- Excel files ---
 openpyxl==3.1.5
@@ -30,12 +30,15 @@ selenium==4.25.0
 playwright==1.48.0
 
 # --- Pipelines & Databases ---
-sqlalchemy==2.0.35
+SQLAlchemy==2.0.35
 psycopg2-binary==2.9.9
 apache-airflow-providers-google==10.20.0
 dask==2024.9.0
+PyMySQL==1.1.1
+apache-airflow-providers-mysql==5.7.2
 
 # --- Utils ---
 tqdm==4.66.5
 pyyaml==6.0.2
+# Se for usar mysql-connector em vez de PyMySQL, comente o PyMySQL e descomente abaixo
 mysql-connector-python

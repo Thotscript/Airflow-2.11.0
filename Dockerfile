@@ -1,25 +1,13 @@
 FROM apache/airflow:2.11.0-python3.12
 
+USER airflow
+
+# Use o constraints oficial do Airflow para a mesma versão/Python
+ARG AIRFLOW_VERSION=2.11.0
+ARG PYTHON_VERSION=3.12
+ARG CONSTRAINT_URL=https://raw.githubusercontent.com/apache/airflow/constraints-${AIRFLOW_VERSION}/constraints-${PYTHON_VERSION}.txt
+
 COPY requirements.txt /requirements.txt
 
-USER airflow
-
-# Atualiza pip primeiro
-RUN pip install --upgrade pip
-
-# Instala as dependências com flags para resolver conflitos
-RUN pip install --no-cache-dir --no-deps -r /requirements.txt || \
-    pip install --no-cache-dir --force-reinstall --no-deps -r /requirements.txt
-
-# Reinstala dependências que podem ter sido quebradas
-RUN pip install --no-cache-dir --upgrade \
-    apache-airflow==2.11.0 \
-    apache-airflow-providers-common-sql \
-    apache-airflow-providers-http
-
-USER root
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl unzip fonts-liberation \
- && rm -rf /var/lib/apt/lists/*
-
-USER airflow
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir -r /requirements.txt -c ${CONSTRAINT_URL}
