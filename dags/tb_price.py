@@ -13,7 +13,7 @@ def main():
     # --- CONFIG BÁSICA ---
     DB_USER = "root"
     DB_PASS = "Tfl1234@"              
-    DB_HOST = "localhost"
+    DB_HOST = "host.docker.internal"
     DB_PORT = 3306
     DB_NAME = "ovh_silver"
 
