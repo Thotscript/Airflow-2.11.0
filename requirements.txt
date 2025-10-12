@@ -4,7 +4,8 @@ numpy==1.26.4
 pyarrow==16.1.0
 
 # --- Dates & time ---
-pendulum==3.0.0
+# pendulum 3 conflita com Airflow 2.11 -> use 2.1.x OU remova e deixe vir do constraints
+pendulum==2.1.2
 
 # --- Google Sheets & Drive API ---
 google-api-python-client==2.146.0
@@ -23,11 +24,11 @@ pyxlsb==1.0.10
 # --- HTTP & Web Scraping ---
 requests==2.32.3
 beautifulsoup4==4.12.3
-lxml==5.2.2
+lxml==5.2.2    # usa wheel manylinux; ok
 
 # --- Browser Automation ---
 selenium==4.25.0
-playwright==1.48.0
+playwright==1.48.0    # ok (os browsers são baixados só no runtime via `playwright install`)
 
 # --- Pipelines & Databases ---
 SQLAlchemy==2.0.35
@@ -40,5 +41,5 @@ apache-airflow-providers-mysql==5.7.2
 # --- Utils ---
 tqdm==4.66.5
 pyyaml==6.0.2
-# Se for usar mysql-connector em vez de PyMySQL, comente o PyMySQL e descomente abaixo
+# Se optar por mysql-connector em vez de PyMySQL, troque no seu código a URL do engine.
 mysql-connector-python
