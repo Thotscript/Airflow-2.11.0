@@ -247,6 +247,14 @@ def build_append_rows(df: pd.DataFrame) -> list:
         if not area and processor_name == "ALOHA Keity":
             area = 'MANUTENÇÃO'
 
+        GUESTS = { "Hernandes Maria Luiza",
+                  "Gonçalves Leon",
+                  "Lima Nathally",
+                  "Farias Klerman"}
+
+        if not area and processor_name in GUESTS:
+            area = 'GUEST'
+
         mapped = [
             unit_name,
             desc,
