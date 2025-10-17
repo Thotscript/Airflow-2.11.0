@@ -1,119 +1,222 @@
+import os
+import json
+import numpy as np
 import pandas as pd
 import requests
-import json
+from requests.adapters import HTTPAdapter, Retry
 import mysql.connector
 import pendulum
-import numpy as np
 from airflow import DAG
 from airflow.decorators import task
+from airflow.exceptions import AirflowException
 
-def main(): 
-    url = "https://web.streamlinevrs.com/api/json"
+API_URL = "https://web.streamlinevrs.com/api/json"
+TOKEN_KEY = "a43cb1b5ed27cce283ab2bb4df540037"
+TOKEN_SECRET = "72c7b8d5ba4b0ef14fe97a7e4179bdfa92cfc6ea"
 
-    data_payload = {
+DB_CFG = dict(
+    host="host.docker.internal",
+    user="root",
+    password="Tfl1234@",
+    database="ovh_silver",
+)
+
+TB_NAME = "tb_reservas"
+PAGE_SIZE = 5000
+
+def build_session():
+    s = requests.Session()
+    retries = Retry(
+        total=4,
+        backoff_factor=0.5,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=("POST",),
+        raise_on_status=False,
+    )
+    s.mount("https://", HTTPAdapter(max_retries=retries))
+    return s
+
+def make_payload(page_number: int):
+    return {
         "methodName": "GetReservations",
         "params": {
-            "token_key": "a43cb1b5ed27cce283ab2bb4df540037",
-            "token_secret": "72c7b8d5ba4b0ef14fe97a7e4179bdfa92cfc6ea",
+            "token_key": TOKEN_KEY,
+            "token_secret": TOKEN_SECRET,
             "return_full": True,
-            #"status_ids": "4,5,7",
-            "page_results_number": 5000, 
-            "page_number": 1 
-        }
+            # "status_ids": "4,5,7",
+            "page_results_number": PAGE_SIZE,
+            "page_number": page_number,
+        },
     }
 
-    headers = {
-        "Content-Type": "application/json"
-    }
+def fetch_page(session: requests.Session, page_number: int) -> dict:
+    payload = make_payload(page_number)
+    headers = {"Content-Type": "application/json"}
+    resp = session.post(API_URL, json=payload, headers=headers, timeout=60)
+    # Log uma amostra da resposta
+    print("Resposta:", resp.status_code, resp.text[:500])
 
-    response = requests.post(url, data=json.dumps(data_payload), headers=headers)
-    print("Resposta:", response.status_code, response.text[:500])
-    
-    data_dict = json.loads(response.content)
+    try:
+        resp.raise_for_status()
+    except requests.HTTPError as e:
+        raise AirflowException(f"HTTP error: {e} | body={resp.text[:500]}")
 
-    df_list = []
+    try:
+        data = resp.json()
+    except ValueError:
+        raise AirflowException(f"Resposta não-JSON: {resp.text[:500]}")
 
-    while data_dict["data"]["reservations"]:
-        df = pd.json_normalize(data_dict["data"]["reservations"])
-        df_list.append(df)
-        data_payload["params"]["page_number"] += 1
-        response = requests.post(url, data=json.dumps(data_payload), headers=headers)
-        data_dict = json.loads(response.content)
+    # Se a API encapsular erro em 200
+    if isinstance(data, dict) and data.get("error"):
+        raise AirflowException(f"API retornou erro: {data.get('error')}")
 
-    df_full = pd.concat(df_list, ignore_index=True)
-    df_full = df_full.drop_duplicates(subset=['id'])
+    return data
 
-    # Adiciona coluna Administradora
+def extract_reservations(payload: dict):
+    if not isinstance(payload, dict):
+        return []
+    data = payload.get("data")
+    if isinstance(data, dict) and "reservations" in data:
+        return data.get("reservations") or []
+    # fallback (caso venha direto na raiz)
+    if "reservations" in payload:
+        return payload.get("reservations") or []
+    return []
+
+def sanitize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    # remove colunas com nome inválido
+    df = df.loc[:, df.columns.notna()]
+    df.columns = [str(c) for c in df.columns]
+    bad = {'nan', 'None', '', 'NaN', 'NAN'}
+    keep = [c for c in df.columns if c not in bad]
+    df = df[keep]
+
+    # normaliza nomes
+    cols = (pd.Series(df.columns)
+            .str.strip()
+            .str.replace(' ', '_', regex=False)
+            .str.replace('.', '_', regex=False)
+            .str.replace('-', '_', regex=False)
+            .str.replace('(', '', regex=False)
+            .str.replace(')', '', regex=False)
+            .str.replace('[', '', regex=False)
+            .str.replace(']', '', regex=False))
+
+    # limita a 64 chars (limite padrão do MySQL) mantendo unicidade
+    def truncate_unique(names):
+        seen = {}
+        out = []
+        for name in names:
+            base = name[:64]
+            if base not in seen:
+                seen[base] = 0
+                out.append(base)
+            else:
+                seen[base] += 1
+                suffix = f"_{seen[base]}"
+                trimmed = base[:64-len(suffix)] + suffix
+                out.append(trimmed)
+        return out
+
+    df.columns = truncate_unique(cols)
+    return df
+
+def clean_values(df: pd.DataFrame) -> pd.DataFrame:
+    # Padroniza valores nulos
+    df = df.replace({np.nan: None, 'nan': None, 'NaN': None, 'None': None, '': None})
+    df = df.where(pd.notna(df), None)
+    return df
+
+def upsert_full_table(df_full: pd.DataFrame):
+    if df_full.empty:
+        print("Nenhuma reserva retornada. Tabela não foi recriada (evitando apagar dados anteriores).")
+        return
+
+    conn = mysql.connector.connect(**DB_CFG)
+    try:
+        cur = conn.cursor()
+
+        # recria sempre (se esse é o comportamento desejado)
+        cur.execute(f"DROP TABLE IF EXISTS `{TB_NAME}`")
+
+        cols_def = ", ".join([f"`{c}` TEXT" for c in df_full.columns])
+        cur.execute(f"CREATE TABLE `{TB_NAME}` ({cols_def})")
+
+        cols_str = ", ".join([f"`{c}`" for c in df_full.columns])
+        placeholders = ", ".join(["%s"] * len(df_full.columns))
+        insert_sql = f"INSERT INTO `{TB_NAME}` ({cols_str}) VALUES ({placeholders})"
+
+        batch_size = 1000
+        total = len(df_full)
+        total_inserted = 0
+        for i in range(0, total, batch_size):
+            batch = df_full.iloc[i:i+batch_size]
+            cur.executemany(insert_sql, batch.values.tolist())
+            conn.commit()
+            total_inserted += len(batch)
+            print(f"Inseridas {total_inserted}/{total} linhas")
+
+        print(f"Tabela `{TB_NAME}` recriada e {total} linhas inseridas com sucesso!")
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+        conn.close()
+
+def main():
+    session = build_session()
+    page = 1
+    dfs = []
+
+    while True:
+        payload = fetch_page(session, page)
+        reservations = extract_reservations(payload)
+
+        # Diagnóstico do shape inesperado
+        if not isinstance(payload, dict) or (
+            "data" not in payload and "reservations" not in payload
+        ):
+            keys = list(payload.keys()) if isinstance(payload, dict) else type(payload).__name__
+            print(f"[WARN] Shape inesperado recebido. keys={keys}")
+
+        # fim da paginação quando vazio
+        if not reservations:
+            print(f"Sem reservas na página {page}. Encerrando paginação.")
+            break
+
+        df = pd.json_normalize(reservations)
+        dfs.append(df)
+        print(f"Página {page}: {len(df)} reservas.")
+
+        # heurística simples: se voltou menos que o PAGE_SIZE, provavelmente acabou
+        if len(reservations) < PAGE_SIZE:
+            print("Última página identificada pela contagem < PAGE_SIZE.")
+            break
+
+        page += 1
+
+    if not dfs:
+        print("Nenhuma página com reservas. Nada a fazer.")
+        return
+
+    df_full = pd.concat(dfs, ignore_index=True)
+    df_full = df_full.drop_duplicates(subset=['id'], keep='first')
+
+    # coluna extra
     df_full['Administradora'] = "ONE VACATION HOME"
 
-    # LIMPEZA DE COLUNAS
-    df_full = df_full.loc[:, df_full.columns.notna()]
-    df_full.columns = [str(col) for col in df_full.columns]
-    valid_columns = [col for col in df_full.columns 
-                     if col not in ['nan', 'None', '', 'NaN', 'NAN']]
-    df_full = df_full[valid_columns]
-    
-    df_full.columns = (df_full.columns
-                       .str.strip()
-                       .str.replace(' ', '_', regex=False)
-                       .str.replace('.', '_', regex=False)
-                       .str.replace('-', '_', regex=False)
-                       .str.replace('(', '', regex=False)
-                       .str.replace(')', '', regex=False)
-                       .str.replace('[', '', regex=False)
-                       .str.replace(']', '', regex=False))
-    
+    # limpeza
+    df_full = sanitize_columns(df_full)
+    df_full = clean_values(df_full)
+
     print(f"Total de colunas: {len(df_full.columns)}")
     print(f"Total de linhas: {len(df_full)}")
 
-    # LIMPEZA DOS DADOS (VALORES) - AQUI ESTÁ A CORREÇÃO PRINCIPAL
-    # Substitui NaN, None e strings 'nan' por None
-    df_full = df_full.replace({np.nan: None, 'nan': None, 'NaN': None, 'None': None, '': None})
-    
-    # Garante que não há mais NaN
-    df_full = df_full.where(pd.notna(df_full), None)
+    # persiste no MySQL
+    upsert_full_table(df_full)
 
-    ## Conexao com o mysql
-    conn = mysql.connector.connect(
-        host="host.docker.internal",
-        user="root",
-        password="Tfl1234@",
-        database="ovh_silver"
-    )
-
-    cursor = conn.cursor()
-    tb_name = "tb_reservas"
-
-    # Drop e recria a tabela
-    cursor.execute(f"DROP TABLE IF EXISTS {tb_name}")
-
-    cols = ", ".join([f"`{c}` TEXT" for c in df_full.columns])
-    cursor.execute(f"CREATE TABLE {tb_name} ({cols})")
-
-    # Monta INSERT
-    cols_str = ", ".join([f"`{c}`" for c in df_full.columns])
-    placeholders = ", ".join(["%s"] * len(df_full.columns))
-    insert_sql = f"INSERT INTO {tb_name} ({cols_str}) VALUES ({placeholders})"
-
-    # Insere em lotes
-    batch_size = 1000
-    total_inserted = 0
-    
-    for i in range(0, len(df_full), batch_size):
-        batch = df_full.iloc[i:i+batch_size]
-        cursor.executemany(insert_sql, batch.values.tolist())
-        conn.commit()
-        total_inserted += len(batch)
-        print(f"Inseridas {total_inserted}/{len(df_full)} linhas")
-
-    print(f"Tabela {tb_name} recriada e {len(df_full)} linhas inseridas com sucesso!")
-
-    cursor.close()
-    conn.close()
-
-if __name__ == "__main__":
-    main()
-
+# === Airflow ===
 SP_TZ = pendulum.timezone("America/Sao_Paulo")
 
 with DAG(
@@ -124,7 +227,7 @@ with DAG(
     tags=["Tabelas - OVH"],
 ) as dag:
 
-    @task()
+    @task(retries=3)
     def tb_reservas():
         main()
 
