@@ -210,6 +210,17 @@ def main():
     df_full = sanitize_columns(df_full)
     df_full = clean_values(df_full)
 
+    df_full["price_nightly"] = df_full["price_nightly"].astype(float)
+    df_full["price_total"] = df_full["price_total"].astype(float)
+    df_full["price_paidsum"] = df_full["price_paidsum"].astype(float)
+    df_full["price_common"] = df_full["price_common"].astype(float)
+    df_full["price_balance"] = df_full["price_balance"].astype(float)
+
+    df_full["creation_date"] = pd.to_datetime(df_full["creation_date"])
+    df_full["startdate"] = pd.to_datetime(df_full["startdate"])
+    df_full["enddate"] = pd.to_datetime(df_full["enddate"])
+    df_full["last_updated"] = pd.to_datetime(df_full["last_updated"])
+
     print(f"Total de colunas: {len(df_full.columns)}")
     print(f"Total de linhas: {len(df_full)}")
 
