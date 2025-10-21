@@ -1,5 +1,6 @@
 import os
 import json
+import re
 import numpy as np
 import pandas as pd
 import requests
@@ -24,6 +25,9 @@ DB_CFG = dict(
 TB_NAME = "tb_reservas"
 PAGE_SIZE = 5000
 
+# =========================
+# Utilidades de sessão HTTP
+# =========================
 def build_session():
     s = requests.Session()
     retries = Retry(
@@ -53,7 +57,7 @@ def fetch_page(session: requests.Session, page_number: int) -> dict:
     payload = make_payload(page_number)
     headers = {"Content-Type": "application/json"}
     resp = session.post(API_URL, json=payload, headers=headers, timeout=60)
-    # Log uma amostra da resposta
+    # Log uma amostra da resposta para depuração
     print("Resposta:", resp.status_code, resp.text[:500])
 
     try:
@@ -83,6 +87,9 @@ def extract_reservations(payload: dict):
         return payload.get("reservations") or []
     return []
 
+# =========================
+# Limpeza de colunas/valores
+# =========================
 def sanitize_columns(df: pd.DataFrame) -> pd.DataFrame:
     # remove colunas com nome inválido
     df = df.loc[:, df.columns.notna()]
@@ -127,6 +134,54 @@ def clean_values(df: pd.DataFrame) -> pd.DataFrame:
     df = df.where(pd.notna(df), None)
     return df
 
+# =========================
+# Parser de datas robusto
+# =========================
+TZ_ABBR_TO_OFFSET = {
+    # EUA leste (provável origem das datas)
+    "EST": "-05:00",
+    "EDT": "-04:00",
+    # Outros comuns (opcional)
+    "CST": "-06:00", "CDT": "-05:00",
+    "MST": "-07:00", "MDT": "-06:00",
+    "PST": "-08:00", "PDT": "-07:00",
+    "UTC": "+00:00", "GMT": "+00:00",
+}
+
+def _normalize_tz_to_offset(s: pd.Series) -> pd.Series:
+    """Converte siglas de fuso no final da string para offsets numéricos; remove espaços duplicados."""
+    s = s.astype(str).str.strip().str.replace(r"\s+", " ", regex=True)
+
+    def repl_tz(text: str) -> str:
+        m = re.search(r"\b([A-Z]{2,4})$", text)
+        if m:
+            abbr = m.group(1)
+            if abbr in TZ_ABBR_TO_OFFSET:
+                return text[:m.start(1)] + TZ_ABBR_TO_OFFSET[abbr]
+        return text
+
+    return s.map(repl_tz)
+
+def parse_dt_mixed(s: pd.Series, *, dayfirst: bool = True, col_name: str = "") -> pd.Series:
+    """Tenta parsear múltiplos formatos, aceita offsets e normaliza para UTC."""
+    s2 = _normalize_tz_to_offset(s)
+    dt = pd.to_datetime(
+        s2,
+        format="mixed",     # pandas >= 2.0
+        dayfirst=dayfirst,  # 02/06/2025 => 2 de junho de 2025
+        utc=True,           # normaliza tudo em UTC
+        errors="coerce",    # não quebra o job
+    )
+    # Diagnóstico: mostre exemplos que falharam
+    bad = s[dt.isna()]
+    if not bad.empty:
+        nome = col_name or getattr(s, "name", "unknown")
+        print(f"[WARN] {len(bad)} valores de data não parseados em '{nome}'. Exemplos:", bad.head(5).tolist())
+    return dt
+
+# =========================
+# Persistência MySQL
+# =========================
 def upsert_full_table(df_full: pd.DataFrame):
     if df_full.empty:
         print("Nenhuma reserva retornada. Tabela não foi recriada (evitando apagar dados anteriores).")
@@ -164,6 +219,9 @@ def upsert_full_table(df_full: pd.DataFrame):
             pass
         conn.close()
 
+# =========================
+# Pipeline principal
+# =========================
 def main():
     session = build_session()
     page = 1
@@ -210,16 +268,21 @@ def main():
     df_full = sanitize_columns(df_full)
     df_full = clean_values(df_full)
 
-    df_full["price_nightly"] = df_full["price_nightly"].astype(float)
-    df_full["price_total"] = df_full["price_total"].astype(float)
-    df_full["price_paidsum"] = df_full["price_paidsum"].astype(float)
-    df_full["price_common"] = df_full["price_common"].astype(float)
-    df_full["price_balance"] = df_full["price_balance"].astype(float)
+    # Conversões numéricas seguras
+    numeric_cols = ["price_nightly", "price_total", "price_paidsum", "price_common", "price_balance"]
+    for col in numeric_cols:
+        if col in df_full:
+            df_full[col] = pd.to_numeric(df_full[col], errors="coerce")
 
-    df_full["creation_date"] = pd.to_datetime(df_full["creation_date"])
-    df_full["startdate"] = pd.to_datetime(df_full["startdate"])
-    df_full["enddate"] = pd.to_datetime(df_full["enddate"])
-    df_full["last_updated"] = pd.to_datetime(df_full["last_updated"])
+    # Conversões de data robustas (UTC)
+    if "creation_date" in df_full:
+        df_full["creation_date"] = parse_dt_mixed(df_full["creation_date"], col_name="creation_date")
+    if "startdate" in df_full:
+        df_full["startdate"] = parse_dt_mixed(df_full["startdate"], col_name="startdate")
+    if "enddate" in df_full:
+        df_full["enddate"] = parse_dt_mixed(df_full["enddate"], col_name="enddate")
+    if "last_updated" in df_full:
+        df_full["last_updated"] = parse_dt_mixed(df_full["last_updated"], col_name="last_updated")
 
     print(f"Total de colunas: {len(df_full.columns)}")
     print(f"Total de linhas: {len(df_full)}")
