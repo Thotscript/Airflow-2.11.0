@@ -286,9 +286,7 @@ def main():
     execution_time = end_time - start_time
     print(f"Tempo de execução: {execution_time:.2f} segundos")
 
-# ==============================
-# DAG (Airflow)
-# ==============================
+# === Airflow ===
 SP_TZ = pendulum.timezone("America/Sao_Paulo")
 
 with DAG(
@@ -300,8 +298,13 @@ with DAG(
     max_active_runs=1,    # evita concorrência do próprio DAG
 ) as dag:
 
-    @task(task_id="run_tb_reservas_price_day", pool="streamline_api", pool_slots=1)
+    @task(
+        task_id="run_tb_reservas_price_day",
+        retries=4,
+        retry_exponential_backoff=True,
+    )
     def run_tb_reservas_price_day():
         main()
 
     run_tb_reservas_price_day()
+
