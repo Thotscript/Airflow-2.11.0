@@ -3,8 +3,9 @@ import requests
 import json
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
-from ratelimit import limits, sleep_and_retry
 import time
+from collections import deque
+from threading import Lock
 
 from sqlalchemy import create_engine
 from urllib.parse import quote_plus
@@ -40,11 +41,32 @@ NOW_STR = datetime.now().strftime('%Y/%m/%d %H:%M:%S')
 END_DATE_STR = (datetime.now() + timedelta(days=547)).strftime('%Y/%m/%d')
 
 # ==============================
+# RATE LIMIT MANUAL (thread-safe)
+# ==============================
+WINDOW_SEC = 60
+MAX_CALLS = 95  # folga abaixo do limite oficial (100/min)
+_call_times = deque()
+_call_lock = Lock()
+
+def throttle():
+    """Garante no máx. MAX_CALLS por WINDOW_SEC. Bloqueia a thread se atingir o limite."""
+    sleep_for = 0.0
+    now = time.time()
+    with _call_lock:
+        _call_times.append(now)
+        # remove timestamps fora da janela
+        while _call_times and (now - _call_times[0]) > WINDOW_SEC:
+            _call_times.popleft()
+        # se atingiu/ultrapassou o limite, calcula quanto falta para liberar
+        if len(_call_times) >= MAX_CALLS:
+            sleep_for = WINDOW_SEC - (now - _call_times[0]) + 0.05
+    if sleep_for > 0:
+        time.sleep(sleep_for)
+
+# ==============================
 # Função chamada em paralelo
 # Parâmetros: (confirmation_id, admin)
 # ==============================
-@sleep_and_retry
-@limits(calls=100, period=60)  # 100 req/min
 def get_unit_data(confirmation_id, admin):
     # payload LOCAL (evita data races)
     payload = {
@@ -57,7 +79,10 @@ def get_unit_data(confirmation_id, admin):
         }
     }
 
+    # aplica throttle manual ANTES da chamada
+    throttle()
     response = requests.post(URL, data=json.dumps(payload), headers=HEADERS, timeout=60)
+
     if response.status_code != 200:
         print(f"[warn] HTTP {response.status_code} - confirmation_id={confirmation_id} admin={admin} body={response.text[:200]}")
         return None
