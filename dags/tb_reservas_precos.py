@@ -23,7 +23,7 @@ TOKEN_SECRET = "72c7b8d5ba4b0ef14fe97a7e4179bdfa92cfc6ea"
 # Preencha token_key/token_secret abaixo se a reserva for de outra administradora.
 CONFIRMATIONS = [
     {
-        "confirmation_id": 479193,                 # <- FIXADO
+        "confirmation_id": "479193",                 # <- FIXADO
         "Administradora": "ONE VACATION HOME",
         # "token_key":   "<<<TOKEN_KEY_DA_ONE>>>",  # (opcional) recomendável preencher se for de outro tenant
         # "token_secret":"<<<TOKEN_SECRET_DA_ONE>>>"
