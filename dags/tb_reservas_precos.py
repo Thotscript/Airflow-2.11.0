@@ -227,12 +227,9 @@ def main():
         SELECT 
             a.confirmation_id,
             a.Administradora
-        FROM tb_reservas a
-        LEFT JOIN (SELECT DISTINCT reservation_id, 'SIM' AS CARREGADO FROM tb_reservas_price_day) b
-            ON a.id = b.reservation_id 
+        FROM tb_reservas a 
         WHERE 1=1
         AND days_number > 1
-        AND CARREGADO IS NULL
         AND status_id IN (4,5,6,7)
         """,
         con=engine
