@@ -172,59 +172,34 @@ def get_unit_data(confirmation_id, admin):
 # Persistência com schema-aware
 # ==============================
 def normalize_and_write(engine, df: pd.DataFrame, table_name: str):
-    """
-    - Detecta colunas da tabela em MySQL
-    - Renomeia 'date' -> 'date_day' (ou outro nome existente parecido)
-    - Converte tipos (DATE/DATETIME/numéricos)
-    - Escreve em chunks com method='multi'
-    """
     if df.empty:
         print("Nada para gravar (DataFrame vazio).")
         return
 
-    insp = inspect(engine)
-    if not insp.has_table(table_name):
-        raise RuntimeError(f"Tabela '{table_name}' não existe no schema {DB_NAME}")
-
-    cols = [c["name"] for c in insp.get_columns(table_name)]
-
-    # Mapear possíveis nomes de coluna de data
-    # Se a tabela NÃO tem 'date' e tem 'date_day' (ou 'dt'/'day'), renomear.
-    if "date" in df.columns and "date" not in cols:
-        for candidate in ("date_day", "day", "dt", "dt_ref"):
-            if candidate in cols:
-                df = df.rename(columns={"date": candidate})
-                break  # renomeado
-        # se nenhum candidato existe, vamos manter 'date' e o insert vai falhar,
-        # mas é melhor surfacing do erro do que inserir errado.
-
-    # Conversões de tipos mais comuns:
-    # detectar nome real da coluna de data-dia
-    date_like_cols = [c for c in ("date", "date_day", "day", "dt", "dt_ref") if c in df.columns]
-    for dc in date_like_cols:
-        try:
-            df[dc] = pd.to_datetime(df[dc], dayfirst=True, errors="coerce").dt.date
-        except Exception:
-            pass
+    # conversões
+    # 'date' vem como 'DD/MM/YYYY' -> DATE
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"], dayfirst=True, errors="coerce").dt.date
 
     if "data_price" in df.columns:
         df["data_price"] = pd.to_datetime(df["data_price"], errors="coerce")
 
-    numeric_cols = ["price", "extra", "discount", "original_cost", "reservation_id"]
-    for nc in numeric_cols:
+    for nc in ["price", "extra", "discount", "original_cost", "reservation_id"]:
         if nc in df.columns:
-            # cuidado com NaN
             df[nc] = pd.to_numeric(df[nc], errors="coerce")
 
-    # Selecionar somente as colunas que existem na tabela (evita erro de coluna desconhecida)
-    keep_cols = [c for c in df.columns if c in cols]
-    missing_in_table = [c for c in df.columns if c not in cols]
-    if missing_in_table:
-        print(f"[info] Ignorando colunas inexistentes na tabela: {missing_in_table}")
+    # garanta as colunas alvo, mesmo que venham ausentes (preenche com NaN/None)
+    target_cols = [
+        "date", "season", "price", "extra", "discount", "original_cost",
+        "reservation_id", "data_price", "Administradora"
+    ]
+    for c in target_cols:
+        if c not in df.columns:
+            df[c] = None
 
-    df = df[keep_cols]
+    # reordena e grava
+    df = df[target_cols]
 
-    # Escrita chunked
     df.to_sql(
         table_name,
         engine,
@@ -234,6 +209,7 @@ def normalize_and_write(engine, df: pd.DataFrame, table_name: str):
         method="multi",
     )
     print(f"Gravou {len(df)} linhas em '{table_name}'.")
+
 
 # ==============================
 # Lógica principal
