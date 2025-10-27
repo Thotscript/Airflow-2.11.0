@@ -5,6 +5,7 @@ from urllib.parse import quote_plus
 import pandas as pd
 from sqlalchemy import create_engine
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.types import Text, DateTime, Float, BigInteger, Integer, Boolean
 
 from airflow import DAG
 from airflow.decorators import task
@@ -20,9 +21,6 @@ DB_HOST = "host.docker.internal"
 DB_PORT = 3306
 DB_NAME = "ovh_silver"
 
-# =========================
-# Consultas (MySQL)
-# =========================
 SQL_RESERVAS = """
 SELECT *
 FROM tb_reservas
@@ -34,44 +32,73 @@ SELECT *
 FROM tb_reservas_price_day;
 """
 
-def sanitize_for_sql(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Converte valores não-escalares (dict, list, set, tuple) para JSON string.
-    Também lida com objetos mistos em colunas 'object'.
-    Retorna um novo DataFrame.
-    """
-    def needs_json(v):
+def sanitize_non_scalars(df: pd.DataFrame) -> pd.DataFrame:
+    def is_non_scalar(v):
         return isinstance(v, (dict, list, set, tuple))
 
     out = df.copy()
-    cols_converted = []
-
+    conv = []
     for col in out.columns:
         if out[col].dtype == "object":
-            # Só converte se existir ao menos um valor dict/list/set/tuple
-            if out[col].map(needs_json).any():
+            if out[col].map(is_non_scalar).any():
                 out[col] = out[col].apply(
                     lambda v: json.dumps(list(v), ensure_ascii=False)
                     if isinstance(v, set)
-                    else (json.dumps(v, ensure_ascii=False) if needs_json(v) else v)
+                    else (json.dumps(v, ensure_ascii=False) if is_non_scalar(v) else v)
                 )
-                cols_converted.append(col)
+                conv.append(col)
+    if conv:
+        print(f"[sanitize_non_scalars] Colunas convertidas para JSON string: {conv}")
+    return out
 
-    if cols_converted:
-        print(f"[sanitize_for_sql] Colunas convertidas para JSON string: {cols_converted}")
+def normalize_datetimes(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    # Converte colunas object que parecem datas
+    for col in out.columns:
+        if out[col].dtype == "object":
+            try:
+                tmp = pd.to_datetime(out[col], errors="ignore", utc=False)
+                out[col] = tmp
+            except Exception:
+                pass
+
+    # Remove timezone de datetimes tz-aware
+    for col in out.select_dtypes(include=["datetimetz"]).columns:
+        out[col] = out[col].dt.tz_convert("UTC").dt.tz_localize(None)
 
     return out
 
+def force_base_nulls(df: pd.DataFrame) -> pd.DataFrame:
+    # Converte NaN/NaT para None para o driver
+    return df.where(pd.notnull(df), None)
+
+def build_dtype_map(df: pd.DataFrame):
+    """
+    Define tipos para MySQL. Tudo que for 'object' vai como TEXT para evitar
+    problemas de serialização; datetime64 como DATETIME; ints e floats mapeados.
+    """
+    dtype = {}
+    for col, dt in df.dtypes.items():
+        if str(dt).startswith("datetime64"):
+            dtype[col] = DateTime()
+        elif str(dt).startswith("int"):
+            # Tentar BigInteger quando parecer grande
+            dtype[col] = BigInteger() if "64" in str(dt) else Integer()
+        elif str(dt).startswith("float"):
+            dtype[col] = Float()
+        elif str(dt) == "bool":
+            dtype[col] = Boolean()
+        elif str(dt) == "object":
+            dtype[col] = Text()
+        # demais tipos (category etc.) deixamos o pandas decidir
+    return dtype
 
 def main():
-    # ---- Engine MySQL ----
     engine = create_engine(
         f"mysql+pymysql://{DB_USER}:{quote_plus(DB_PASS)}@{DB_HOST}:{DB_PORT}/{DB_NAME}?charset=utf8mb4",
         pool_pre_ping=True,
     )
-
     try:
-        # ---- Leitura das tabelas ----
         reservas = pd.read_sql(SQL_RESERVAS, con=engine)
         precos   = pd.read_sql(SQL_PRECOS,   con=engine)
 
@@ -79,17 +106,17 @@ def main():
             print("Aviso: tb_reservas não retornou linhas com status_id em (4,5,6,7). Encerrando.")
             return
 
-        # ---- Merge (LEFT) reservas x preços ----
         resultado = pd.merge(
             reservas,
             precos,
             left_on="id",
             right_on="reservation_id",
             how="left",
-            suffixes=("", "_price")
+            suffixes=("", "_price"),
+            copy=False
         )
 
-        # ---- Substituições de 'casas espelhos' em unit_id ----
+        # casas espelhos
         casas_espelhos = {
             567515: 451446, 747169: 345511, 588400: 747861, 588406: 747861, 441403: 747861,
             614452: 341242, 747735: 341242, 747171: 379860, 379240: 747177, 747215: 334111,
@@ -98,42 +125,34 @@ def main():
             747754: 495437, 747249: 598346, 747092: 379248, 747254: 425652, 746111: 514404,
             735680: 498139
         }
-
         if "unit_id" in resultado.columns:
             resultado["unit_id"] = pd.to_numeric(resultado["unit_id"], errors="coerce").astype("Int64")
             resultado["unit_id"] = resultado["unit_id"].replace(casas_espelhos)
 
-        # ---- Atualização de datas de criação por ID ----
-        # Se esta tabela tiver 'creation_date' e você precisar ajustar datas manualmente, faça aqui:
-        # Exemplo:
-        # novas_datas = { 33956627: '10/21/2023 00:00:00', ... }
-        # if "creation_date" in resultado.columns:
-        #     for _id, nova_data in novas_datas.items():
-        #         mask = resultado["id"] == _id
-        #         if mask.any():
-        #             resultado.loc[mask, "creation_date"] = pd.to_datetime(
-        #                 nova_data, format="%m/%d/%Y %H:%M:%S", errors="coerce"
-        #             )
-        #     resultado["creation_date"] = pd.to_datetime(resultado["creation_date"], errors="coerce")
+        # normalizações
+        resultado = normalize_datetimes(resultado)
+        resultado = sanitize_non_scalars(resultado)
+        resultado = force_base_nulls(resultado)
 
-        # ---- Sanitização para evitar "dict can not be used as parameter" ----
-        resultado = sanitize_for_sql(resultado)
+        # mapeia dtype explícito
+        dtype = build_dtype_map(resultado)
 
-        # ---- Escrita transacional segura ----
         table_name = "tb_reservas_por_data"
         try:
+            # Dica: use method=None (sem multi) para capturar o erro raiz de forma mais clara.
             with engine.begin() as conn:
                 resultado.to_sql(
                     table_name,
                     con=conn,
                     if_exists="replace",
                     index=False,
-                    chunksize=100_000,
-                    method="multi"
+                    chunksize=None,   # um único insert por linha (diagnóstico)
+                    method=None,      # <— troque para "multi" quando estabilizar
+                    dtype=dtype
                 )
             print(f"Dados Gravados Com Sucesso em {table_name}. Linhas: {len(resultado)}")
         except SQLAlchemyError as e:
-            print("Erro ao gravar no MySQL via to_sql:")
+            print("Erro ao gravar no MySQL via to_sql (root cause abaixo):")
             print(e)
             traceback.print_exc()
             raise
@@ -149,7 +168,7 @@ SP_TZ = pendulum.timezone("America/Sao_Paulo")
 with DAG(
     dag_id="OVH-tb_reservas_por_data",
     start_date=pendulum.datetime(2025, 9, 23, 8, 0, tz=SP_TZ),
-    schedule="0 5 * * *",  # diariamente 05:00
+    schedule="0 5 * * *",
     catchup=False,
     tags=["Tabelas - OVH"],
 ) as dag:
