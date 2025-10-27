@@ -24,7 +24,7 @@ DB_NAME = "ovh_silver"
 # =========================
 SQL_RESERVAS = """
 SELECT *
-FROM tb_reserva
+FROM tb_reservas
 WHERE status_id IN (4,5,6,7);
 """
 
