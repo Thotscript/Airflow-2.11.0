@@ -1,3 +1,4 @@
+import json
 import traceback
 from urllib.parse import quote_plus
 
@@ -33,6 +34,34 @@ SELECT *
 FROM tb_reservas_price_day;
 """
 
+def sanitize_for_sql(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Converte valores não-escalares (dict, list, set, tuple) para JSON string.
+    Também lida com objetos mistos em colunas 'object'.
+    Retorna um novo DataFrame.
+    """
+    def needs_json(v):
+        return isinstance(v, (dict, list, set, tuple))
+
+    out = df.copy()
+    cols_converted = []
+
+    for col in out.columns:
+        if out[col].dtype == "object":
+            # Só converte se existir ao menos um valor dict/list/set/tuple
+            if out[col].map(needs_json).any():
+                out[col] = out[col].apply(
+                    lambda v: json.dumps(list(v), ensure_ascii=False)
+                    if isinstance(v, set)
+                    else (json.dumps(v, ensure_ascii=False) if needs_json(v) else v)
+                )
+                cols_converted.append(col)
+
+    if cols_converted:
+        print(f"[sanitize_for_sql] Colunas convertidas para JSON string: {cols_converted}")
+
+    return out
+
 
 def main():
     # ---- Engine MySQL ----
@@ -42,6 +71,7 @@ def main():
     )
 
     try:
+        # ---- Leitura das tabelas ----
         reservas = pd.read_sql(SQL_RESERVAS, con=engine)
         precos   = pd.read_sql(SQL_PRECOS,   con=engine)
 
@@ -74,63 +104,25 @@ def main():
             resultado["unit_id"] = resultado["unit_id"].replace(casas_espelhos)
 
         # ---- Atualização de datas de criação por ID ----
-        novas_datas = {
-            33956627:'10/21/2023 00:00:00', 33967753:'07/11/2023 00:00:00',
-            33967744:'06/28/2023 00:00:00', 33967723:'05/16/2023 00:00:00',
-            33967713:'05/05/2023 00:00:00', 33967706:'04/27/2023 00:00:00',
-            33967510:'08/15/2023 00:00:00', 33967500:'08/09/2023 00:00:00',
-            33967475:'07/24/2023 00:00:00', 33967419:'07/10/2023 00:00:00',
-            33967394:'06/28/2023 00:00:00', 33967360:'06/23/2023 00:00:00',
-            33967333:'06/16/2023 00:00:00', 33967306:'06/09/2023 00:00:00',
-            33967263:'06/01/2023 00:00:00', 33967237:'05/25/2023 00:00:00',
-            33967196:'05/19/2023 00:00:00', 33967169:'05/12/2023 00:00:00',
-            33967099:'05/03/2023 00:00:00', 33967056:'04/30/2023 00:00:00',
-            33966324:'09/30/2023 00:00:00', 33966266:'06/16/2023 00:00:00',
-            33966241:'05/21/2023 00:00:00', 33966206:'05/06/2023 00:00:00',
-            33966183:'04/27/2023 00:00:00', 33966128:'03/10/2023 00:00:00',
-            33965469:'07/09/2023 00:00:00', 33965399:'05/24/2023 00:00:00',
-            33965322:'03/10/2023 00:00:00', 33964156:'06/27/2023 00:00:00',
-            33964092:'05/20/2023 00:00:00', 33964053:'05/09/2023 00:00:00',
-            33964037:'04/22/2023 00:00:00', 33954119:'08/14/2023 00:00:00',
-            33954087:'07/22/2023 00:00:00', 33954062:'07/13/2023 00:00:00',
-            33954044:'07/06/2023 00:00:00', 33954019:'06/28/2023 00:00:00',
-            33954005:'06/21/2023 00:00:00', 33953973:'06/16/2023 00:00:00',
-            33953949:'06/09/2023 00:00:00', 33953921:'05/07/2023 00:00:00',
-            33953894:'04/27/2023 00:00:00', 33953880:'04/21/2023 00:00:00',
-            33952017:'07/22/2023 00:00:00', 33951998:'07/14/2023 00:00:00',
-            33951977:'06/20/2023 00:00:00', 33951957:'05/05/2023 00:00:00',
-            33951931:'04/24/2023 00:00:00', 33951070:'08/10/2023 00:00:00',
-            33951028:'07/20/2023 00:00:00', 33951012:'07/13/2023 00:00:00',
-            33950981:'07/08/2023 00:00:00', 33950870:'06/28/2023 00:00:00',
-            33950789:'06/14/2023 00:00:00', 33950758:'06/03/2023 00:00:00',
-            33950709:'05/07/2023 00:00:00', 33950688:'04/28/2023 00:00:00',
-            33950638:'04/21/2023 00:00:00', 33966030:'05/21/2023 00:00:00',
-            33965965:'04/16/2023 00:00:00', 33953002:'06/09/2023 00:00:00',
-            33952959:'03/10/2023 00:00:00', 33952549:'04/21/2023 00:00:00',
-            33966168:'03/30/2023 00:00:00', 33966140:'03/22/2023 00:00:00',
-            33965373:'04/14/2023 00:00:00', 33953869:'04/15/2023 00:00:00',
-            33953850:'03/30/2023 00:00:00', 33953826:'03/24/2023 00:00:00',
-            33953812:'03/17/2023 00:00:00', 33952977:'03/31/2023 00:00:00',
-            33951917:'04/09/2023 00:00:00', 33951900:'03/30/2023 00:00:00',
-            33951877:'03/17/2023 00:00:00', 33950938:'07/04/2023 00:00:00',
-            33950605:'04/04/2023 00:00:00'
-        }
+        # Se esta tabela tiver 'creation_date' e você precisar ajustar datas manualmente, faça aqui:
+        # Exemplo:
+        # novas_datas = { 33956627: '10/21/2023 00:00:00', ... }
+        # if "creation_date" in resultado.columns:
+        #     for _id, nova_data in novas_datas.items():
+        #         mask = resultado["id"] == _id
+        #         if mask.any():
+        #             resultado.loc[mask, "creation_date"] = pd.to_datetime(
+        #                 nova_data, format="%m/%d/%Y %H:%M:%S", errors="coerce"
+        #             )
+        #     resultado["creation_date"] = pd.to_datetime(resultado["creation_date"], errors="coerce")
 
-        if "creation_date" in resultado.columns:
-            # Converte para datetime nativo (formato de entrada está em MM/DD/YYYY HH:MM:SS)
-            for _id, nova_data in novas_datas.items():
-                mask = resultado["id"] == _id
-                if mask.any():
-                    resultado.loc[mask, "creation_date"] = pd.to_datetime(
-                        nova_data, format="%m/%d/%Y %H:%M:%S", errors="coerce"
-                    )
-            # Se por acaso houver strings restantes, força conversão do restante:
-            resultado["creation_date"] = pd.to_datetime(resultado["creation_date"], errors="coerce")
+        # ---- Sanitização para evitar "dict can not be used as parameter" ----
+        resultado = sanitize_for_sql(resultado)
 
         # ---- Escrita transacional segura ----
         table_name = "tb_reservas_por_data"
         try:
-            with engine.begin() as conn:  # inicia uma transação; rollback automático em erro
+            with engine.begin() as conn:
                 resultado.to_sql(
                     table_name,
                     con=conn,
@@ -141,7 +133,6 @@ def main():
                 )
             print(f"Dados Gravados Com Sucesso em {table_name}. Linhas: {len(resultado)}")
         except SQLAlchemyError as e:
-            # Mostra a causa raiz (ex.: erro de conversão de data/coluna)
             print("Erro ao gravar no MySQL via to_sql:")
             print(e)
             traceback.print_exc()
