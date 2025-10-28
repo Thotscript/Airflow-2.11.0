@@ -19,7 +19,7 @@ DB_CFG = dict(
     host="host.docker.internal",
     user="root",
     password="Tfl1234@",
-    database="ovh_silver",
+    database="ovh_bronze",
 )
 
 TB_NAME = "tb_reservas"
