@@ -10,6 +10,7 @@ import pendulum
 from airflow import DAG
 from airflow.decorators import task
 from airflow.exceptions import AirflowException
+from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 
 API_URL = "https://web.streamlinevrs.com/api/json"
 TOKEN_KEY = "a43cb1b5ed27cce283ab2bb4df540037"
@@ -365,6 +366,7 @@ def main():
 # === Airflow ===
 SP_TZ = pendulum.timezone("America/Sao_Paulo")
 
+
 with DAG(
     dag_id="OVH-tb_reservas",
     start_date=pendulum.datetime(2025, 9, 23, 8, 0, tz=SP_TZ),
@@ -378,6 +380,15 @@ with DAG(
         retry_exponential_backoff=True,
     )
     def tb_reservas():
+        # sua função atual
         main()
 
-    tb_reservas()
+    trigger_check_reservas = TriggerDagRunOperator(
+        task_id="trigger_OVH_Check_tb_reservas",
+        trigger_dag_id="OVH-Check-tb_reservas",
+        reset_dag_run=True,        # evita run duplicado com mesma logical_date
+        wait_for_completion=False, # não bloqueia o produtor
+        conf={"source": "OVH-tb_reservas"}  # opcional: envia contexto
+    )
+
+    tb_reservas() >> trigger_check_reservas
