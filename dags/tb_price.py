@@ -154,7 +154,7 @@ SP_TZ = pendulum.timezone("America/Sao_Paulo")
 with DAG(
     dag_id="OVH-tb_price",
     start_date=pendulum.datetime(2025, 9, 23, 8, 0, tz=SP_TZ),
-    schedule="0 5 * * *",
+    schedule="15 5 * * *",
     catchup=False,
     tags=["Tabelas - OVH"],
 ) as dag:
