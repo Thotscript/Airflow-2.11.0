@@ -200,8 +200,7 @@ def infer_mysql_type(col: str, s: pd.Series) -> str:
     if pd.api.types.is_float_dtype(s):
         return "DOUBLE"
 
-    # objetos/strings -> escolher VARCHAR pelo tamanho observado
-    # (ignora None)
+    # objetos/strings -> escolher VARCHAR pelo tamanho observado (ignora None)
     lengths = s.dropna().astype(str).map(len)
     max_len = int(lengths.max()) if not lengths.empty else 0
     return _varchar_for_max_len(max_len)
@@ -220,11 +219,9 @@ def coerce_for_mysql(df: pd.DataFrame) -> pd.DataFrame:
     # Datas: converter timezone-aware UTC -> naive (MySQL DATETIME não guarda TZ)
     for c in out.columns:
         if pd.api.types.is_datetime64_any_dtype(out[c]):
-            # se for tz-aware (pandas >= 2.0 mantém dtype DatetimeTZDtype)
             try:
                 out[c] = out[c].dt.tz_convert("UTC").dt.tz_localize(None)
             except Exception:
-                # já deve estar naive; garantir sem nanos fora do range
                 out[c] = pd.to_datetime(out[c], errors="coerce").dt.floor("s")
 
     # Bools -> int
@@ -232,11 +229,28 @@ def coerce_for_mysql(df: pd.DataFrame) -> pd.DataFrame:
         if pd.api.types.is_bool_dtype(out[c]):
             out[c] = out[c].astype("int8")
 
-    # Inteiros muito grandes: BIGINT suporta ±9.22e18 (64-bit)
-    # Floats mantidos como float (DOUBLE)
-    # Strings: já ok
-
     return out
+
+# =========================
+# >>> OPÇÃO A: colunas-espelho em DD/MM/YYYY (texto)
+# =========================
+def add_br_date_strings(df: pd.DataFrame, cols: list[str], tz: str = "America/Sao_Paulo") -> pd.DataFrame:
+    """
+    Para cada coluna datetime em 'cols', cria uma coluna *_br (string) no formato DD/MM/YYYY,
+    convertendo antes para o fuso informado (default: America/Sao_Paulo).
+    Mantém as colunas originais como datetime (UTC).
+    """
+    for c in cols:
+        if c in df and pd.api.types.is_datetime64_any_dtype(df[c]):
+            try:
+                s = df[c]
+                if s.dt.tz is None:
+                    s = s.dt.tz_localize("UTC")
+                df[f"{c}_br"] = s.dt.tz_convert(tz).dt.strftime("%d/%m/%Y")
+            except Exception:
+                # fallback para garantir criação mesmo com valores problemáticos
+                df[f"{c}_br"] = pd.to_datetime(df[c], errors="coerce").dt.strftime("%d/%m/%Y")
+    return df
 
 # =========================
 # Persistência com SWAP tipado
@@ -357,6 +371,10 @@ def main():
     if "last_updated" in df_full:
         df_full["last_updated"] = parse_dt_mixed(df_full["last_updated"], col_name="last_updated")
 
+    # >>> OPÇÃO A: criar colunas *_br (texto DD/MM/YYYY) preservando originais como datetime (UTC)
+    date_cols_present = [c for c in ["creation_date", "startdate", "enddate", "last_updated"] if c in df_full]
+    df_full = add_br_date_strings(df_full, cols=date_cols_present, tz="America/Sao_Paulo")
+
     print(f"Total de colunas: {len(df_full.columns)}")
     print(f"Total de linhas: {len(df_full)}")
 
@@ -365,7 +383,6 @@ def main():
 
 # === Airflow ===
 SP_TZ = pendulum.timezone("America/Sao_Paulo")
-
 
 with DAG(
     dag_id="OVH-tb_reservas",
@@ -380,15 +397,14 @@ with DAG(
         retry_exponential_backoff=True,
     )
     def tb_reservas():
-        # sua função atual
         main()
 
     trigger_check_reservas = TriggerDagRunOperator(
         task_id="trigger_OVH_Check_tb_reservas",
         trigger_dag_id="OVH-Check-tb_reservas",
-        reset_dag_run=True,        # evita run duplicado com mesma logical_date
-        wait_for_completion=False, # não bloqueia o produtor
-        conf={"source": "OVH-tb_reservas"}  # opcional: envia contexto
+        reset_dag_run=True,
+        wait_for_completion=False,
+        conf={"source": "OVH-tb_reservas"}
     )
 
     tb_reservas() >> trigger_check_reservas
