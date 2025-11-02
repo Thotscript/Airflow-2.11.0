@@ -153,12 +153,12 @@ def _normalize_tz_to_offset(s: pd.Series) -> pd.Series:
         return text
     return s.map(repl_tz)
 
-def parse_dt_mixed(s: pd.Series, *, dayfirst: bool = True, col_name: str = "") -> pd.Series:
+def parse_dt_mixed(s: pd.Series, *, dayfirst: bool = False, col_name: str = "") -> pd.Series:
     s2 = _normalize_tz_to_offset(s)
     dt = pd.to_datetime(
         s2,
         format="mixed",
-        dayfirst=dayfirst,
+        dayfirst=dayfirst,   # agora False por padrão
         utc=True,
         errors="coerce",
     )
@@ -167,6 +167,7 @@ def parse_dt_mixed(s: pd.Series, *, dayfirst: bool = True, col_name: str = "") -
         nome = col_name or getattr(s, "name", "unknown")
         print(f"[WARN] {len(bad)} valores de data não parseados em '{nome}'. Exemplos:", bad.head(5).tolist())
     return dt
+
 
 # =========================
 # Inferência de tipos MySQL
@@ -367,15 +368,16 @@ def main():
         if col in df_full:
             df_full[col] = pd.to_numeric(df_full[col], errors="coerce")
 
-    # Datas (UTC parse)
+    # Datas (UTC) — API em formato americano MM/DD/YYYY
     if "creation_date" in df_full:
-        df_full["creation_date"] = parse_dt_mixed(df_full["creation_date"], col_name="creation_date")
+        df_full["creation_date"] = parse_dt_mixed(df_full["creation_date"], dayfirst=False, col_name="creation_date")
     if "startdate" in df_full:
-        df_full["startdate"] = parse_dt_mixed(df_full["startdate"], col_name="startdate")
+        df_full["startdate"] = parse_dt_mixed(df_full["startdate"], dayfirst=False, col_name="startdate")
     if "enddate" in df_full:
-        df_full["enddate"] = parse_dt_mixed(df_full["enddate"], col_name="enddate")
+        df_full["enddate"] = parse_dt_mixed(df_full["enddate"], dayfirst=False, col_name="enddate")
     if "last_updated" in df_full:
-        df_full["last_updated"] = parse_dt_mixed(df_full["last_updated"], col_name="last_updated")
+        df_full["last_updated"] = parse_dt_mixed(df_full["last_updated"], dayfirst=False, col_name="last_updated")
+
 
     # >>> CONVERSÃO IN-PLACE PARA America/Sao_Paulo (sem sufixos)
     date_cols_present = [c for c in ["creation_date", "startdate", "enddate", "last_updated"] if c in df_full]
