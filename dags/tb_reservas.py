@@ -189,7 +189,7 @@ def infer_mysql_type(col: str, s: pd.Series) -> str:
 
     # pandas dtype checks
     if pd.api.types.is_datetime64_any_dtype(s):
-        return "DATETIME"  # guardaremos como DATETIME (naive)
+        return "DATETIME"  # gravaremos DATETIME (naive)
 
     if pd.api.types.is_bool_dtype(s):
         return "TINYINT(1)"
@@ -215,38 +215,33 @@ def build_create_table_sql(table: str, df: pd.DataFrame) -> str:
 
 def coerce_for_mysql(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
-
-    # Datas: converter timezone-aware UTC -> naive (MySQL DATETIME não guarda TZ)
+    # Datas: se tiver tz, converte para UTC e remove tz; se já estiver naive, só garante floor
     for c in out.columns:
         if pd.api.types.is_datetime64_any_dtype(out[c]):
             try:
                 out[c] = out[c].dt.tz_convert("UTC").dt.tz_localize(None)
             except Exception:
-                # já deve estar naive; garantir sem nanos fora do range
                 out[c] = pd.to_datetime(out[c], errors="coerce").dt.floor("s")
-
     # Bools -> int
     for c in out.columns:
         if pd.api.types.is_bool_dtype(out[c]):
             out[c] = out[c].astype("int8")
-
     return out
 
 # =========================
-# Datetime local (America/Sao_Paulo) preservando dtype
+# Conversão IN-PLACE para America/Sao_Paulo (mantendo datetime)
 # =========================
-def add_local_datetime(
+def convert_datetime_inplace(
     df: pd.DataFrame,
     cols: list[str],
     tz: str = "America/Sao_Paulo",
-    suffix: str = "_local",
 ) -> pd.DataFrame:
     """
-    Para cada coluna datetime em 'cols':
-      - assume UTC; se não tiver tz, localiza como UTC
-      - converte para o fuso 'tz'
-      - remove a informação de timezone (naive), arredonda p/ segundos
-    Resultado: novas colunas datetime (ex.: creation_date_local) apropriadas para MySQL DATETIME.
+    Para cada coluna em 'cols':
+      - assume que os valores estão em UTC (ou localiza como UTC se naive)
+      - converte para o fuso informado
+      - remove tz (naive) e arredonda para segundos
+    Sobrescreve a própria coluna (sem sufixos).
     """
     for c in cols:
         if c in df and pd.api.types.is_datetime64_any_dtype(df[c]):
@@ -256,8 +251,7 @@ def add_local_datetime(
                     s = s.dt.tz_localize("UTC")
             except Exception:
                 s = pd.to_datetime(s, utc=True, errors="coerce")
-
-            df[f"{c}{suffix}"] = (
+            df[c] = (
                 s.dt.tz_convert(tz)
                  .dt.floor("s")
                  .dt.tz_localize(None)
@@ -373,7 +367,7 @@ def main():
         if col in df_full:
             df_full[col] = pd.to_numeric(df_full[col], errors="coerce")
 
-    # Datas (UTC)
+    # Datas (UTC parse)
     if "creation_date" in df_full:
         df_full["creation_date"] = parse_dt_mixed(df_full["creation_date"], col_name="creation_date")
     if "startdate" in df_full:
@@ -383,9 +377,9 @@ def main():
     if "last_updated" in df_full:
         df_full["last_updated"] = parse_dt_mixed(df_full["last_updated"], col_name="last_updated")
 
-    # Datetimes locais (America/Sao_Paulo) como datetime naive (para MySQL DATETIME)
+    # >>> CONVERSÃO IN-PLACE PARA America/Sao_Paulo (sem sufixos)
     date_cols_present = [c for c in ["creation_date", "startdate", "enddate", "last_updated"] if c in df_full]
-    df_full = add_local_datetime(df_full, cols=date_cols_present, tz="America/Sao_Paulo", suffix="_local")
+    df_full = convert_datetime_inplace(df_full, cols=date_cols_present, tz="America/Sao_Paulo")
 
     print(f"Total de colunas: {len(df_full.columns)}")
     print(f"Total de linhas: {len(df_full)}")
