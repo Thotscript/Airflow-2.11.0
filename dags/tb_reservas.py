@@ -189,7 +189,7 @@ def infer_mysql_type(col: str, s: pd.Series) -> str:
 
     # pandas dtype checks
     if pd.api.types.is_datetime64_any_dtype(s):
-        return "DATETIME"  # guardaremos UTC sem tz
+        return "DATETIME"  # guardaremos como DATETIME (naive)
 
     if pd.api.types.is_bool_dtype(s):
         return "TINYINT(1)"
@@ -222,6 +222,7 @@ def coerce_for_mysql(df: pd.DataFrame) -> pd.DataFrame:
             try:
                 out[c] = out[c].dt.tz_convert("UTC").dt.tz_localize(None)
             except Exception:
+                # já deve estar naive; garantir sem nanos fora do range
                 out[c] = pd.to_datetime(out[c], errors="coerce").dt.floor("s")
 
     # Bools -> int
@@ -232,24 +233,35 @@ def coerce_for_mysql(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 # =========================
-# >>> OPÇÃO A: colunas-espelho em DD/MM/YYYY (texto)
+# Datetime local (America/Sao_Paulo) preservando dtype
 # =========================
-def add_br_date_strings(df: pd.DataFrame, cols: list[str], tz: str = "America/Sao_Paulo") -> pd.DataFrame:
+def add_local_datetime(
+    df: pd.DataFrame,
+    cols: list[str],
+    tz: str = "America/Sao_Paulo",
+    suffix: str = "_local",
+) -> pd.DataFrame:
     """
-    Para cada coluna datetime em 'cols', cria uma coluna *_br (string) no formato DD/MM/YYYY,
-    convertendo antes para o fuso informado (default: America/Sao_Paulo).
-    Mantém as colunas originais como datetime (UTC).
+    Para cada coluna datetime em 'cols':
+      - assume UTC; se não tiver tz, localiza como UTC
+      - converte para o fuso 'tz'
+      - remove a informação de timezone (naive), arredonda p/ segundos
+    Resultado: novas colunas datetime (ex.: creation_date_local) apropriadas para MySQL DATETIME.
     """
     for c in cols:
         if c in df and pd.api.types.is_datetime64_any_dtype(df[c]):
+            s = df[c]
             try:
-                s = df[c]
                 if s.dt.tz is None:
                     s = s.dt.tz_localize("UTC")
-                df[f"{c}_br"] = s.dt.tz_convert(tz).dt.strftime("%d/%m/%Y")
             except Exception:
-                # fallback para garantir criação mesmo com valores problemáticos
-                df[f"{c}_br"] = pd.to_datetime(df[c], errors="coerce").dt.strftime("%d/%m/%Y")
+                s = pd.to_datetime(s, utc=True, errors="coerce")
+
+            df[f"{c}{suffix}"] = (
+                s.dt.tz_convert(tz)
+                 .dt.floor("s")
+                 .dt.tz_localize(None)
+            )
     return df
 
 # =========================
@@ -371,9 +383,9 @@ def main():
     if "last_updated" in df_full:
         df_full["last_updated"] = parse_dt_mixed(df_full["last_updated"], col_name="last_updated")
 
-    # >>> OPÇÃO A: criar colunas *_br (texto DD/MM/YYYY) preservando originais como datetime (UTC)
+    # Datetimes locais (America/Sao_Paulo) como datetime naive (para MySQL DATETIME)
     date_cols_present = [c for c in ["creation_date", "startdate", "enddate", "last_updated"] if c in df_full]
-    df_full = add_br_date_strings(df_full, cols=date_cols_present, tz="America/Sao_Paulo")
+    df_full = add_local_datetime(df_full, cols=date_cols_present, tz="America/Sao_Paulo", suffix="_local")
 
     print(f"Total de colunas: {len(df_full.columns)}")
     print(f"Total de linhas: {len(df_full)}")
