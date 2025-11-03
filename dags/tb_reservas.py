@@ -51,7 +51,6 @@ def make_payload(page_number: int):
             "token_key": TOKEN_KEY,
             "token_secret": TOKEN_SECRET,
             "return_full": True,
-            # "status_ids": "4,5,7",
             "page_results_number": PAGE_SIZE,
             "page_number": page_number,
         },
@@ -158,7 +157,7 @@ def parse_dt_mixed(s: pd.Series, *, dayfirst: bool = False, col_name: str = "") 
     dt = pd.to_datetime(
         s2,
         format="mixed",
-        dayfirst=dayfirst,   # agora False por padrão
+        dayfirst=dayfirst,
         utc=True,
         errors="coerce",
     )
@@ -168,6 +167,20 @@ def parse_dt_mixed(s: pd.Series, *, dayfirst: bool = False, col_name: str = "") 
         print(f"[WARN] {len(bad)} valores de data não parseados em '{nome}'. Exemplos:", bad.head(5).tolist())
     return dt
 
+# =========================
+# Conversão IN-PLACE (mantendo datetime)
+# =========================
+def convert_datetime_inplace(df: pd.DataFrame, cols: list[str], tz: str = "America/Sao_Paulo") -> pd.DataFrame:
+    for c in cols:
+        if c in df and pd.api.types.is_datetime64_any_dtype(df[c]):
+            s = df[c]
+            try:
+                if s.dt.tz is None:
+                    s = s.dt.tz_localize("UTC")
+            except Exception:
+                s = pd.to_datetime(s, utc=True, errors="coerce")
+            df[c] = s.dt.tz_convert(tz).dt.floor("s").dt.tz_localize(None)
+    return df
 
 # =========================
 # Inferência de tipos MySQL
@@ -184,80 +197,37 @@ def _varchar_for_max_len(max_len: int) -> str:
     return "MEDIUMTEXT"
 
 def infer_mysql_type(col: str, s: pd.Series) -> str:
-    # prioridade por nome conhecido
     if col in PRICE_COLS:
         return "DECIMAL(18,2)"
-
-    # pandas dtype checks
     if pd.api.types.is_datetime64_any_dtype(s):
-        return "DATETIME"  # gravaremos DATETIME (naive)
-
+        return "DATETIME"
     if pd.api.types.is_bool_dtype(s):
         return "TINYINT(1)"
-
     if pd.api.types.is_integer_dtype(s):
         return "BIGINT"
-
     if pd.api.types.is_float_dtype(s):
         return "DOUBLE"
-
-    # objetos/strings -> escolher VARCHAR pelo tamanho observado (ignora None)
     lengths = s.dropna().astype(str).map(len)
     max_len = int(lengths.max()) if not lengths.empty else 0
     return _varchar_for_max_len(max_len)
 
 def build_create_table_sql(table: str, df: pd.DataFrame) -> str:
-    col_defs = []
-    for c in df.columns:
-        mysql_type = infer_mysql_type(c, df[c])
-        col_defs.append(f"`{c}` {mysql_type} NULL")
+    col_defs = [f"`{c}` {infer_mysql_type(c, df[c])} NULL" for c in df.columns]
     cols_sql = ", ".join(col_defs)
     return f"CREATE TABLE `{table}` ({cols_sql}) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
 
 def coerce_for_mysql(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
-    # Datas: se tiver tz, converte para UTC e remove tz; se já estiver naive, só garante floor
     for c in out.columns:
         if pd.api.types.is_datetime64_any_dtype(out[c]):
             try:
                 out[c] = out[c].dt.tz_convert("UTC").dt.tz_localize(None)
             except Exception:
                 out[c] = pd.to_datetime(out[c], errors="coerce").dt.floor("s")
-    # Bools -> int
     for c in out.columns:
         if pd.api.types.is_bool_dtype(out[c]):
             out[c] = out[c].astype("int8")
     return out
-
-# =========================
-# Conversão IN-PLACE para America/Sao_Paulo (mantendo datetime)
-# =========================
-def convert_datetime_inplace(
-    df: pd.DataFrame,
-    cols: list[str],
-    tz: str = "America/Sao_Paulo",
-) -> pd.DataFrame:
-    """
-    Para cada coluna em 'cols':
-      - assume que os valores estão em UTC (ou localiza como UTC se naive)
-      - converte para o fuso informado
-      - remove tz (naive) e arredonda para segundos
-    Sobrescreve a própria coluna (sem sufixos).
-    """
-    for c in cols:
-        if c in df and pd.api.types.is_datetime64_any_dtype(df[c]):
-            s = df[c]
-            try:
-                if s.dt.tz is None:
-                    s = s.dt.tz_localize("UTC")
-            except Exception:
-                s = pd.to_datetime(s, utc=True, errors="coerce")
-            df[c] = (
-                s.dt.tz_convert(tz)
-                 .dt.floor("s")
-                 .dt.tz_localize(None)
-            )
-    return df
 
 # =========================
 # Persistência com SWAP tipado
@@ -270,14 +240,12 @@ def create_and_swap_typed(df_full: pd.DataFrame, final_table: str):
     tmp_table = f"{final_table}__tmp"
     backup_table = f"{final_table}__old"
 
-    # Coerções finais para casar com os tipos MySQL
     df_sql = coerce_for_mysql(df_full)
 
     conn = mysql.connector.connect(**DB_CFG)
     try:
         cur = conn.cursor()
 
-        # cria TMP com tipos inferidos
         cur.execute(f"DROP TABLE IF EXISTS `{tmp_table}`")
         create_sql = build_create_table_sql(tmp_table, df_sql)
         cur.execute(create_sql)
@@ -296,7 +264,6 @@ def create_and_swap_typed(df_full: pd.DataFrame, final_table: str):
             total_inserted += len(batch)
             print(f"[TMP] Inseridas {total_inserted}/{total} linhas")
 
-        # swap atômico
         cur.execute(f"DROP TABLE IF EXISTS `{backup_table}`")
         cur.execute(
             "SELECT COUNT(*) FROM information_schema.tables "
@@ -333,10 +300,6 @@ def main():
         payload = fetch_page(session, page)
         reservations = extract_reservations(payload)
 
-        if not isinstance(payload, dict) or ("data" not in payload and "reservations" not in payload):
-            keys = list(payload.keys()) if isinstance(payload, dict) else type(payload).__name__
-            print(f"[WARN] Shape inesperado recebido. keys={keys}")
-
         if not reservations:
             print(f"Sem reservas na página {page}. Encerrando paginação.")
             break
@@ -346,20 +309,15 @@ def main():
         print(f"Página {page}: {len(df)} reservas.")
 
         if len(reservations) < PAGE_SIZE:
-            print("Última página identificada pela contagem < PAGE_SIZE.")
             break
-
         page += 1
 
     if not dfs:
-        print("Nenhuma página com reservas. Nada a fazer.")
+        print("Nenhuma página com reservas.")
         return
 
-    df_full = pd.concat(dfs, ignore_index=True)
-    df_full = df_full.drop_duplicates(subset=['id'], keep='first')
-
-    df_full['Administradora'] = "ONE VACATION HOME"
-
+    df_full = pd.concat(dfs, ignore_index=True).drop_duplicates(subset=["id"], keep="first")
+    df_full["Administradora"] = "ONE VACATION HOME"
     df_full = sanitize_columns(df_full)
     df_full = clean_values(df_full)
 
@@ -368,25 +326,22 @@ def main():
         if col in df_full:
             df_full[col] = pd.to_numeric(df_full[col], errors="coerce")
 
-    # Datas (UTC) — API em formato americano MM/DD/YYYY
+    # Datas: separação entre datetime e date
     if "creation_date" in df_full:
-        df_full["creation_date"] = parse_dt_mixed(df_full["creation_date"], dayfirst=False, col_name="creation_date")
-    if "startdate" in df_full:
-        df_full["startdate"] = parse_dt_mixed(df_full["startdate"], dayfirst=False, col_name="startdate")
-    if "enddate" in df_full:
-        df_full["enddate"] = parse_dt_mixed(df_full["enddate"], dayfirst=False, col_name="enddate")
+        df_full["creation_date"] = parse_dt_mixed(df_full["creation_date"], col_name="creation_date")
     if "last_updated" in df_full:
-        df_full["last_updated"] = parse_dt_mixed(df_full["last_updated"], dayfirst=False, col_name="last_updated")
+        df_full["last_updated"] = parse_dt_mixed(df_full["last_updated"], col_name="last_updated")
 
+    if "startdate" in df_full:
+        df_full["startdate"] = pd.to_datetime(df_full["startdate"], format="%m/%d/%Y", errors="coerce").dt.date
+    if "enddate" in df_full:
+        df_full["enddate"] = pd.to_datetime(df_full["enddate"], format="%m/%d/%Y", errors="coerce").dt.date
 
-    # >>> CONVERSÃO IN-PLACE PARA America/Sao_Paulo (sem sufixos)
-    date_cols_present = [c for c in ["creation_date", "startdate", "enddate", "last_updated"] if c in df_full]
-    df_full = convert_datetime_inplace(df_full, cols=date_cols_present, tz="America/Sao_Paulo")
+    # Converte timezone apenas para colunas com horário
+    date_time_cols = [c for c in ["creation_date", "last_updated"] if c in df_full]
+    df_full = convert_datetime_inplace(df_full, cols=date_time_cols, tz="America/Sao_Paulo")
 
-    print(f"Total de colunas: {len(df_full.columns)}")
-    print(f"Total de linhas: {len(df_full)}")
-
-    # Persistência tipada com swap seguro
+    print(f"Total de colunas: {len(df_full.columns)} | Total de linhas: {len(df_full)}")
     create_and_swap_typed(df_full, TB_NAME)
 
 # === Airflow ===
@@ -400,10 +355,7 @@ with DAG(
     tags=["Tabelas - OVH"],
 ) as dag:
 
-    @task(
-        retries=4,
-        retry_exponential_backoff=True,
-    )
+    @task(retries=4, retry_exponential_backoff=True)
     def tb_reservas():
         main()
 
@@ -412,7 +364,7 @@ with DAG(
         trigger_dag_id="OVH-Check-tb_reservas",
         reset_dag_run=True,
         wait_for_completion=False,
-        conf={"source": "OVH-tb_reservas"}
+        conf={"source": "OVH-tb_reservas"},
     )
 
     tb_reservas() >> trigger_check_reservas
