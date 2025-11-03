@@ -1,13 +1,15 @@
 import os
-import base64
-import requests
+import re
 import json
+import math
+import requests
 import pandas as pd
+import numpy as np
 from datetime import datetime, timedelta
-import mysql.connector
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from email.mime.application import MIMEApplication
+import pendulum
+
+from airflow import DAG
+from airflow.decorators import task
 
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -15,352 +17,327 @@ from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from google.auth.exceptions import RefreshError
 
-# Airflow / Scheduler
-import pendulum
-from airflow import DAG
-from airflow.decorators import task
+# ——— Datas dinâmicas ———
+hoje = datetime.now().date()
+maio = "05/11/2025"
+dt_maio = datetime.strptime(maio,'%m/%d/%Y')
+START_DATE = (hoje - timedelta(days=10)).strftime('%m/%d/%Y')
+END_DATE   = (hoje - timedelta(days=0)).strftime('%m/%d/%Y')
 
-# ================================
-# CONFIGURAÇÕES
-# ================================
-# Gmail API
-GMAIL_SCOPES = [
-    "https://www.googleapis.com/auth/gmail.modify",
-    "https://www.googleapis.com/auth/gmail.send",
+# ——— Config Streamline ———
+STREAMLINE_URL   = "https://web.streamlinevrs.com/api/json"
+TOKEN_KEY        = 'a43cb1b5ed27cce283ab2bb4df540037'
+TOKEN_SECRET     = '72c7b8d5ba4b0ef14fe97a7e4179bdfa92cfc6ea'
+SELECTED_COLUMNS = ['unit_id', 'unit_name', 'title', 'creation_date', 'id', 'processor_name', 'status_name']
+
+# ——— Config Google Sheets ———
+SCOPES           = [
+    'https://www.googleapis.com/auth/spreadsheets',
+    'https://www.googleapis.com/auth/drive'
 ]
-USER_ID = "me"
 
-# Pastas de tokens (mesmo padrão do exemplo)
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CREDENTIALS_FILE = os.path.join(BASE_DIR, "Tokens", "credentials.json")
-GMAIL_TOKEN_FILE = os.path.join(BASE_DIR, "Tokens", "gmail_token.json")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # /opt/airflow/dags
+CREDENTIALS_FILE = os.path.join(BASE_DIR, 'Tokens', 'credentials.json')
+TOKEN_FILE       = os.path.join(BASE_DIR, 'Tokens', 'sheets_token.json')
 
-# MySQL (ovh_silver)
-MYSQL_CONFIG = {
-    "host": "host.docker.internal",
-    "user": "root",
-    "password": "Tfl1234@",
-    "database": "ovh_silver",
-}
+# Planilha de destino e intervalo para leitura
+DEST_SS_ID       = '1uCbvQz-PeLhFmT7Ah1IxaHyqMVwrly0ddmwlRi5i3xo'
+DEST_SHEET_NAME  = 'TESTE1'
+DEST_READ_RANGE  = f'{DEST_SHEET_NAME}!A:I'
 
-# Streamline
-STREAMLINE_URL = "https://web.streamlinevrs.com/api/json"
-TOKEN_KEY = "a43cb1b5ed27cce283ab2bb4df540037"
-TOKEN_SECRET = "72c7b8d5ba4b0ef14fe97a7e4179bdfa92cfc6ea"
-HEADERS_JSON = {"Content-Type": "application/json"}
 
-# Saída
-EXCEL_FILE = "Uniglobe.xlsx"
-
-# ================================
-# GMAIL AUTH (mesmo padrão do exemplo)
-# ================================
-def _gmail_interactive_login() -> Credentials:
+def _do_interactive_login() -> Credentials:
     """
-    Executa o fluxo OAuth local (com refresh_token garantido) e salva em gmail_token.json.
+    Executa o fluxo OAuth local, garantindo refresh_token.
     """
-    flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, GMAIL_SCOPES)
-    creds = flow.run_local_server(port=0, access_type="offline", prompt="consent")
-    os.makedirs(os.path.dirname(GMAIL_TOKEN_FILE), exist_ok=True)
-    with open(GMAIL_TOKEN_FILE, "w") as f:
+    flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
+    # Garante refresh_token mesmo se já houver consentimento anterior
+    creds = flow.run_local_server(port=0, access_type='offline', prompt='consent')
+    with open(TOKEN_FILE, 'w') as f:
         f.write(creds.to_json())
     return creds
 
-def get_gmail_credentials() -> Credentials:
+
+def get_credentials() -> Credentials:
     """
     Lê o token salvo; se expirado tenta refresh.
-    Em caso de RefreshError ('deleted_client', 'invalid_grant', etc.), apaga o token e refaz o login.
+    Em caso de RefreshError (inclui 'deleted_client', 'invalid_grant'), apaga o token e refaz o login.
     """
     creds = None
-    if os.path.exists(GMAIL_TOKEN_FILE):
+
+    # Carrega token, se existir
+    if os.path.exists(TOKEN_FILE):
         try:
-            creds = Credentials.from_authorized_user_file(GMAIL_TOKEN_FILE, GMAIL_SCOPES)
+            creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
         except Exception:
+            # Token corrompido
             try:
-                os.remove(GMAIL_TOKEN_FILE)
+                os.remove(TOKEN_FILE)
             except Exception:
                 pass
             creds = None
 
+    # Se não há credenciais válidas, executa login interativo
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             try:
                 creds.refresh(Request())
-                with open(GMAIL_TOKEN_FILE, "w") as f:
+                # Salva novamente (pode atualizar expiry/token)
+                with open(TOKEN_FILE, 'w') as f:
                     f.write(creds.to_json())
                 return creds
-            except RefreshError:
-                if os.path.exists(GMAIL_TOKEN_FILE):
+            except RefreshError as e:
+                # Trata 'deleted_client', 'invalid_grant', etc.: apaga token e refaz login
+                if os.path.exists(TOKEN_FILE):
                     try:
-                        os.remove(GMAIL_TOKEN_FILE)
+                        os.remove(TOKEN_FILE)
                     except Exception:
                         pass
-                return _gmail_interactive_login()
+                return _do_interactive_login()
         else:
-            return _gmail_interactive_login()
+            # Sem token/refresh_token: login interativo
+            return _do_interactive_login()
+
     return creds
 
-def get_gmail_service():
-    return build("gmail", "v1", credentials=get_gmail_credentials())
 
-# ================================
-# EMAIL
-# ================================
-def send_custom_email_with_attachment(
-    service,
-    recipient,
-    subject,
-    message_text,
-    attachment_path,
-    sender="revenue@onevacationhome.com",
-):
-    recipient_str = ", ".join(recipient) if isinstance(recipient, list) else recipient
+def get_sheets_service():
+    return build('sheets', 'v4', credentials=get_credentials())
 
-    message = MIMEMultipart()
-    message["to"] = recipient_str
-    message["from"] = sender
-    message["subject"] = subject
-    message.attach(MIMEText(message_text, "html"))
 
-    with open(attachment_path, "rb") as f:
-        attachment_data = f.read()
-    attachment = MIMEApplication(attachment_data, _subtype="octet-stream")
-    attachment.add_header(
-        "Content-Disposition", "attachment", filename=os.path.basename(attachment_path)
-    )
-    message.attach(attachment)
-
-    raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode("utf-8")
-    body = {"raw": raw_message}
-    sent_message = service.users().messages().send(userId=USER_ID, body=body).execute()
-    print("E-mail enviado com sucesso! ID da mensagem:", sent_message.get("id"))
-    return sent_message
-
-# ================================
-# MYSQL
-# ================================
-def get_mysql_connection():
-    return mysql.connector.connect(**MYSQL_CONFIG)
-
-def fetch_confirmation_ids_from_mysql():
+def get_last_row_column_a(svc, ss_id: str, sheet_name: str) -> int:
     """
-    Busca confirmation_id em ovh_silver.tb_reservas conforme regra:
-      - Seg–Qui: startdate = hoje
-      - Sex: startdate IN (hoje, amanhã, depois)
-    Sempre com: status_code NOT IN (6,8,10) e confirmation_id > 0
+    Encontra a última linha com dados na coluna A especificamente.
+    Retorna o número da linha (1-indexed).
     """
-    today = datetime.today().date()
-    tomorrow = today + timedelta(days=1)
-    day_after = today + timedelta(days=2)
-
-    if today.weekday() == 4:  # sexta
-        dates = [today, tomorrow, day_after]
-    else:  # seg–qui (e fim de semana mantém só hoje)
-        dates = [today]
-
-    conn = get_mysql_connection()
     try:
-        cur = conn.cursor()
-        placeholders = ", ".join(["%s"] * len(dates))
-        sql = f"""
-            SELECT DISTINCT confirmation_id
-            FROM tb_reservas
-            WHERE DATE(startdate) IN ({placeholders})
-              AND status_code NOT IN (6,8,10)
-              AND confirmation_id > 0
-        """
-        cur.execute(sql, tuple(dates))
-        ids = [r[0] for r in cur.fetchall()]
-        print(f"Confirmation IDs obtidos do MySQL ({len(ids)}): {ids}")
-        return ids
-    finally:
+        # Busca dados apenas da coluna A
+        result = svc.spreadsheets().values().get(
+            spreadsheetId=ss_id,
+            range=f'{sheet_name}!A:A',
+            valueRenderOption='UNFORMATTED_VALUE'
+        ).execute()
+        
+        values = result.get('values', [])
+        
+        if not values:
+            print("Coluna A está vazia")
+            return 0
+        
+        # Procura a última linha com dados na coluna A
+        last_row_with_data = 0
+        for i, row in enumerate(values):
+            if row and len(row) > 0 and str(row[0]).strip():  # Verifica se a célula A não está vazia
+                last_row_with_data = i + 1
+        
+        print(f"Última linha com dados na coluna A: {last_row_with_data}")
+        return last_row_with_data
+        
+    except Exception as e:
+        print(f"Erro ao verificar coluna A: {e}")
+        return 0
+
+
+def clean_and_df() -> pd.DataFrame:
+    status_ids = list(range(1, 8))   # [1,2,3,4,5,6,7]
+    if 3 in status_ids:
+        status_ids.remove(3)         # agora: [1,2,4,5,6,7]
+    dfs = []
+
+    for status in status_ids:
+        payload = {
+            "methodName": "GetWorkOrders",
+            "params": {
+                "token_key": TOKEN_KEY,
+                "token_secret": TOKEN_SECRET,
+                "show_labor_amount_charged_to_owner_guest": 1,
+                "show_owner_description": 1,
+                "date_type": "creation_date",
+                "status_id": status,
+                "start_date": START_DATE,
+                "end_date": END_DATE
+            }
+        }
+        resp = requests.post(STREAMLINE_URL, json=payload, headers={"Content-Type": "application/json"})
+        resp.raise_for_status()
+        json_resp = resp.json()
+
         try:
-            cur.close()
+            maint_list = json_resp["data"]["maintenances"]["maintenance"]
         except Exception:
-            pass
-        conn.close()
+            maint_list = json_resp if isinstance(json_resp, list) else []
 
-# ================================
-# STREAMLINE (GetReservationInfo)
-# ================================
-def print_api_error_response(label, response, max_chars=2000):
-    """Loga somente a resposta em caso de erro."""
-    try:
-        body = response.text
-    except Exception:
-        body = "<sem .text disponível>"
-    if body and len(body) > max_chars:
-        body = body[:max_chars] + f"... [truncado em {max_chars} chars]"
-    print(f"[ERRO {label}] status={getattr(response, 'status_code', 'N/A')}")
-    print(f"[ERRO {label}] body:\n{body}\n")
+        if maint_list:
+            df_status = pd.json_normalize(maint_list)
+            cols = [c for c in SELECTED_COLUMNS if c in df_status.columns]
+            if cols:
+                dfs.append(df_status[cols])
 
-def fetch_reservation(cid: int) -> pd.DataFrame:
-    """
-    Chama GetReservationInfo e retorna 1 DataFrame (1 linha) com campos principais + additional_fields.
-    Em erro, retorna DataFrame vazio.
-    """
-    payload = {
-        "methodName": "GetReservationInfo",
-        "params": {
-            "token_key": TOKEN_KEY,
-            "token_secret": TOKEN_SECRET,
-            "confirmation_id": cid,
-            "return_address": 1,
-            "return_flags": 1,
-            "show_owner_charges": 1,
-            "show_taxes_and_fees": 1,
-            "show_commission_information": 1,
-            "return_payments": 1,
-            "return_additional_fields": 1,
-            "show_payments_folio_history": 1,
-            "include_security_deposit": 1,
-            "return_housekeeping_schedule": 1,
-            "return_happystays_code": 1,
-            "show_guest_feedback_url": 1,
-        },
-    }
-    try:
-        resp = requests.post(STREAMLINE_URL, data=json.dumps(payload), headers=HEADERS_JSON, timeout=60)
-    except requests.RequestException as e:
-        print(f"[ERRO confirmation_id={cid}] falha na requisição: {repr(e)}")
-        return pd.DataFrame()
+    if not dfs:
+        return pd.DataFrame(columns=SELECTED_COLUMNS)
 
-    if not resp.ok:
-        print_api_error_response(f"confirmation_id={cid}", resp)
-        return pd.DataFrame()
+    df = pd.concat(dfs, ignore_index=True).drop_duplicates()
 
-    try:
-        data = resp.json()
-    except ValueError:
-        print_api_error_response(f"confirmation_id={cid} (JSON inválido)", resp)
-        return pd.DataFrame()
+    df['title'] = (
+        df['title']
+          .astype(str)
+          .str.replace(r'[\r\n]+', ' ', regex=True)
+          .str.replace(r'\s+', ' ', regex=True)
+          .str.strip()
+    )
 
-    if "data" not in data or "reservation" not in data["data"]:
-        print_api_error_response(f"confirmation_id={cid} (estrutura inesperada)", resp)
-        return pd.DataFrame()
-
-    reservation = data["data"]["reservation"]
-    nested_fields = [
-        "flags",
-        "additional_fields",
-        "expected_charges",
-        "housekeeping_schedule",
-        "taxes_and_fees",
-        "commission_information",
-        "payments_folio_history",
+    unwanted = [
+        "CHECKLIST", "turn pool", "Manutenção Geral",
+        "Abrir owner closet", "Fotografar e trancar owner closet", "DOOR CODE"
     ]
-    main_data = {k: v for k, v in reservation.items() if k not in nested_fields}
-    df_main = pd.json_normalize(main_data)
+    pattern = "|".join(map(re.escape, unwanted))
+    df = df[~df['title'].str.contains(pattern, case=False, na=False)]
+    df = df[df['unit_name'].astype(str).str.strip() != ""]
 
-    additional_fields_list = reservation.get("additional_fields", {}).get("additional_field", [])
-    df_add = pd.DataFrame()
-    if additional_fields_list:
-        add_dict = {item.get("name"): item.get("value") for item in additional_fields_list}
-        df_add = pd.DataFrame([add_dict])
+    df['creation_date'] = (
+        df['creation_date']
+          .astype(str)
+          .str.replace(r'\s?[A-Z]{2,4}$', '', regex=True)
+    )
+    df['creation_date'] = pd.to_datetime(df['creation_date'], errors='coerce')
 
-    return pd.concat([df_main, df_add], axis=1)
+    return df
 
-# ================================
-# PLANILHA (Excel) + ENVIO
-# ================================
-def build_excel_and_send(final_df: pd.DataFrame, excel_path: str = EXCEL_FILE):
-    # colunas alvo
-    final_columns = ["startdate", "unit_name", "Client Name", "phone", "door code", "Emergency Code"]
 
-    def door_code_rule(row):
-        try:
-            code = float(row.get("Reservation: EasyHub Code", 0))
-        except (ValueError, TypeError):
-            code = 0
-        return (str(row.get("Reservation: EasyHub Code", "")) + "#") if code > 0 else row.get("confirmation_id", "")
+def filter_existing(df: pd.DataFrame) -> pd.DataFrame:
+    svc = get_sheets_service()
+    result = svc.spreadsheets().values().get(
+        spreadsheetId=DEST_SS_ID,
+        range=f'{DEST_SHEET_NAME}!G:G'
+    ).execute()
+    vals = result.get('values', [])
+    existing_ids = {row[0] for row in vals if row}
+    return df[~df['id'].astype(str).isin(existing_ids)].reset_index(drop=True)
 
-    def emergency_code_rule(row):
-        try:
-            code = float(row.get("Reservation: EasyHub Code", 0))
-        except (ValueError, TypeError):
-            code = 0
-        return "252500#" if code > 0 else "2525/7676/6965"
 
-    if not final_df.empty:
-        # formatar data apenas para visual (não forçar fuso)
-        if "startdate" in final_df.columns:
-            final_df["startdate"] = pd.to_datetime(final_df["startdate"], format="%m/%d/%Y", errors="coerce").dt.date
+def build_append_rows(df: pd.DataFrame) -> list:
+    rows = []
+    mapping = {
+        'inspeção': 'VIRGINIA',
+        'guest in': 'GUEST',
+        'edy': 'EDY',
+        'limpeza': 'LIMPEZA',
+        'manutenção': 'MANUTENÇÃO',
+        'ale': 'ALE',
+        'owner': 'OWNER'
+    }
 
-        final_df["Client Name"] = (
-            final_df.get("first_name", "").fillna("") + " " + final_df.get("last_name", "").fillna("")
-        ).str.strip()
-        final_df["door code"] = final_df.apply(door_code_rule, axis=1)
-        final_df["Emergency Code"] = final_df.apply(emergency_code_rule, axis=1)
+    for _, row in df.iterrows():
+        unit_name = row.get('unit_name') or ''
+        desc      = row.get('title') or ''
+        date_val  = row.get('creation_date')
+        date_str  = '' if pd.isna(date_val) else date_val.strftime('%Y-%m-%d %H:%M:%S')
+        id_val    = row.get('id')
+        id_str    = '' if pd.isna(id_val) else str(int(id_val)) if str(id_val).isdigit() else str(id_val)
+        processor_name  = row.get('processor_name') or ''
+        status_name     = row.get('status_name') or ''
 
-        for col in final_columns:
-            if col not in final_df.columns:
-                final_df[col] = ""
+        match = re.search(r'\(([^)]+)\)\s*$', desc.strip(), flags=re.IGNORECASE)
+        area = ''
+        if match:
+            key = match.group(1).lower()
+            area = mapping.get(key, '')
 
-        out = final_df[final_columns].copy()
-        if "startdate" in out.columns:
-            out = out.sort_values(by="startdate", ascending=True)
-    else:
-        out = pd.DataFrame(columns=final_columns)
+        # Ajuste: fallback para "ALOHA Keity"
+        if not area and processor_name == "ALOHA Keity":
+            area = 'MANUTENÇÃO'
 
-    out.to_excel(excel_path, index=False)
-    print("Arquivo Excel salvo com sucesso!")
+        GUESTS = { "Hernandes Maria Luiza",
+                  "Gonçalves Leon",
+                  "Lima Nathally",
+                  "Farias Klerman"}
 
-    # envia e-mail
-    service = get_gmail_service()
-    recipient = "booking@onevacationhome.com"
-    subject = "Planilha Uniglobe"
-    message_text = """
-    <html>
-      <body>
-        <p>Boa tarde,</p>
-        <p>Segue o planilha da Uniglobe.</p>
-        <p>Obrigado</p>
-      </body>
-    </html>
-    """
-    send_custom_email_with_attachment(service, recipient, subject, message_text, attachment_path=excel_path)
+        if not area and processor_name in GUESTS:
+            area = 'GUEST'
 
-# ================================
-# MAIN
-# ================================
+        mapped = [
+            unit_name,
+            desc,
+            area,
+            '',
+            date_str,
+            '',
+            id_str,
+            processor_name,
+            status_name
+        ]
+        rows.append(mapped)
+    return rows
+
+
+def append_to_sheet(ss_id: str, start_row: int, values: list):
+    svc = get_sheets_service()
+    value_ranges = []
+    for i, row in enumerate(values):
+        row_number = start_row + i
+        unit_name, desc, area, _, date_str, _, id_str, processor_name, status_name = row
+
+        ranges = [
+            {"range": f"{DEST_SHEET_NAME}!A{row_number}", "values": [[unit_name]]},
+            {"range": f"{DEST_SHEET_NAME}!B{row_number}", "values": [[desc]]},
+        ]
+        if area:
+            ranges.append({"range": f"{DEST_SHEET_NAME}!C{row_number}", "values": [[area]]})
+
+        ranges.extend([
+            {"range": f"{DEST_SHEET_NAME}!E{row_number}", "values": [[date_str]]},
+            {"range": f"{DEST_SHEET_NAME}!G{row_number}", "values": [[id_str]]},
+            {"range": f"{DEST_SHEET_NAME}!H{row_number}", "values": [[processor_name]]},
+            {"range": f"{DEST_SHEET_NAME}!I{row_number}", "values": [[status_name]]},
+        ])
+
+        value_ranges.extend(ranges)
+
+    body = {"valueInputOption": "RAW", "data": value_ranges}
+    svc.spreadsheets().values().batchUpdate(
+        spreadsheetId=ss_id,
+        body=body
+    ).execute()
+
+
 def main():
-    # 1) IDs do MySQL com regra de datas
-    ids = fetch_confirmation_ids_from_mysql()
-    if not ids:
-        print("Nenhum confirmation_id retornado do MySQL — nada a fazer.")
+    df = clean_and_df()
+    df = filter_existing(df)
+    print(f"{len(df)} novas linhas para inserir.")
+
+    if df.empty:
+        print("Nada a inserir. Encerrando.")
         return
 
-    # 2) Chama API para cada ID
-    frames = []
-    for cid in ids:
-        df_one = fetch_reservation(cid)
-        if not df_one.empty:
-            frames.append(df_one)
+    svc = get_sheets_service()
+    
+    # Verifica a última linha com dados na coluna A
+    last_row_with_data = get_last_row_column_a(svc, DEST_SS_ID, DEST_SHEET_NAME)
+    
+    start_row = last_row_with_data + 1
+    print(f"Iniciando inserção na linha: {start_row}")
 
-    final_df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-    print(f"Registros coletados: {len(final_df)}")
+    to_append = build_append_rows(df)
+    append_to_sheet(DEST_SS_ID, start_row, to_append)
+    print(f"Inseridas {len(to_append)} linhas a partir da linha {start_row} em '{DEST_SHEET_NAME}'.")
 
-    # 3) Excel + e-mail
-    build_excel_and_send(final_df, EXCEL_FILE)
 
 if __name__ == "__main__":
     main()
 
-# ================================
-# AIRFLOW DAG
-# ================================
+
 SP_TZ = pendulum.timezone("America/Sao_Paulo")
 
 with DAG(
-    dag_id="Uniglobe",  # Nome da DAG
+    dag_id="WorkOrders",  # Nome da dag (task/tarefa)
     start_date=pendulum.datetime(2025, 9, 23, 8, 0, tz=SP_TZ),
     schedule="0 8,18 * * *",
     catchup=False,
-    tags=["Uniglobe - OVH"],
+    tags=["WorkOrders - OVH"],
 ) as dag:
 
     @task()
-    def run_uniglobe():
-        main()  # executa o fluxo completo
+    def WorkOrders():
+        main()  # executa seu fluxo exatamente como está definido acima
 
-    run_uniglobe()
+    WorkOrders()
