@@ -33,7 +33,7 @@ USER_ID = "me"
 # Pastas/arquivos de credenciais (seguindo o MESMO padrão do seu exemplo)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # /opt/airflow/dags
 GMAIL_CREDENTIALS_FILE = os.path.join(BASE_DIR, "Tokens", "credentials.json")
-GMAIL_TOKEN_FILE       = os.path.join(BASE_DIR, "Tokens", "sheets_token.json")
+GMAIL_TOKEN_FILE       = os.path.join(BASE_DIR, "Tokens", "token.json")
 
 # MySQL (ovh_silver)
 MYSQL_CONFIG = {
