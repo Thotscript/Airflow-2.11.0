@@ -355,7 +355,7 @@ SP_TZ = pendulum.timezone("America/Sao_Paulo")
 with DAG(
     dag_id="Uniglobe",  # Nome da DAG
     start_date=pendulum.datetime(2025, 9, 23, 8, 0, tz=SP_TZ),
-    schedule="0 8,18 * * *",
+    schedule="0 8 * * *",
     catchup=False,
     tags=["Uniglobe - OVH"],
 ) as dag:
