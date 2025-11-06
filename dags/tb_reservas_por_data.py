@@ -53,16 +53,18 @@ def sanitize_non_scalars(df: pd.DataFrame) -> pd.DataFrame:
 
 def normalize_datetimes(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
-    # Converte colunas object que parecem datas
     for col in out.columns:
         if out[col].dtype == "object":
+            # tenta converter assumindo o padrão ISO ou BR, e depois fallback
             try:
-                tmp = pd.to_datetime(out[col], errors="ignore", utc=False)
-                out[col] = tmp
+                out[col] = pd.to_datetime(out[col], format="%Y-%m-%d %H:%M:%S", errors="coerce")
             except Exception:
-                pass
+                try:
+                    out[col] = pd.to_datetime(out[col], format="%d/%m/%Y %H:%M:%S", errors="coerce")
+                except Exception:
+                    out[col] = pd.to_datetime(out[col], errors="coerce")
 
-    # Remove timezone de datetimes tz-aware
+    # remove timezone se houver
     for col in out.select_dtypes(include=["datetimetz"]).columns:
         out[col] = out[col].dt.tz_convert("UTC").dt.tz_localize(None)
 
