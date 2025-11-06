@@ -21,16 +21,15 @@ DB_HOST = "host.docker.internal"
 DB_PORT = 3306
 DB_NAME = "ovh_silver"
 
-SQL_RESERVAS = """
-SELECT *
-FROM tb_reservas
-WHERE status_id IN (4,5,6,7);
+# Merge direto no banco (evita carregar tabelas inteiras)
+SQL_FINAL = """
+SELECT r.*, p.*
+FROM tb_reservas AS r
+LEFT JOIN tb_reservas_price_day AS p
+  ON r.id = p.reservation_id
+WHERE r.status_id IN (4,5,6,7);
 """
 
-SQL_PRECOS = """
-SELECT *
-FROM tb_reservas_price_day;
-"""
 
 def sanitize_non_scalars(df: pd.DataFrame) -> pd.DataFrame:
     def is_non_scalar(v):
@@ -51,11 +50,11 @@ def sanitize_non_scalars(df: pd.DataFrame) -> pd.DataFrame:
         print(f"[sanitize_non_scalars] Colunas convertidas para JSON string: {conv}")
     return out
 
+
 def normalize_datetimes(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     for col in out.columns:
         if out[col].dtype == "object":
-            # tenta converter assumindo o padrão ISO ou BR, e depois fallback
             try:
                 out[col] = pd.to_datetime(out[col], format="%Y-%m-%d %H:%M:%S", errors="coerce")
             except Exception:
@@ -64,27 +63,21 @@ def normalize_datetimes(df: pd.DataFrame) -> pd.DataFrame:
                 except Exception:
                     out[col] = pd.to_datetime(out[col], errors="coerce")
 
-    # remove timezone se houver
     for col in out.select_dtypes(include=["datetimetz"]).columns:
         out[col] = out[col].dt.tz_convert("UTC").dt.tz_localize(None)
-
     return out
 
+
 def force_base_nulls(df: pd.DataFrame) -> pd.DataFrame:
-    # Converte NaN/NaT para None para o driver
     return df.where(pd.notnull(df), None)
 
+
 def build_dtype_map(df: pd.DataFrame):
-    """
-    Define tipos para MySQL. Tudo que for 'object' vai como TEXT para evitar
-    problemas de serialização; datetime64 como DATETIME; ints e floats mapeados.
-    """
     dtype = {}
     for col, dt in df.dtypes.items():
         if str(dt).startswith("datetime64"):
             dtype[col] = DateTime()
         elif str(dt).startswith("int"):
-            # Tentar BigInteger quando parecer grande
             dtype[col] = BigInteger() if "64" in str(dt) else Integer()
         elif str(dt).startswith("float"):
             dtype[col] = Float()
@@ -92,72 +85,68 @@ def build_dtype_map(df: pd.DataFrame):
             dtype[col] = Boolean()
         elif str(dt) == "object":
             dtype[col] = Text()
-        # demais tipos (category etc.) deixamos o pandas decidir
     return dtype
+
 
 def main():
     engine = create_engine(
         f"mysql+pymysql://{DB_USER}:{quote_plus(DB_PASS)}@{DB_HOST}:{DB_PORT}/{DB_NAME}?charset=utf8mb4",
         pool_pre_ping=True,
     )
+
+    table_name = "tb_reservas_por_data"
+    CHUNK_SIZE = 50000  # número de linhas por lote
+
     try:
-        reservas = pd.read_sql(SQL_RESERVAS, con=engine)
-        precos   = pd.read_sql(SQL_PRECOS,   con=engine)
+        print("[main] Iniciando leitura em chunks e merge SQL...")
+        chunks = pd.read_sql(SQL_FINAL, con=engine, chunksize=CHUNK_SIZE)
 
-        if reservas.empty:
-            print("Aviso: tb_reservas não retornou linhas com status_id em (4,5,6,7). Encerrando.")
-            return
+        total_linhas = 0
+        for i, chunk in enumerate(chunks):
+            print(f"[chunk {i}] Linhas recebidas: {len(chunk)}")
 
-        resultado = pd.merge(
-            reservas,
-            precos,
-            left_on="id",
-            right_on="reservation_id",
-            how="left",
-            suffixes=("", "_price"),
-            copy=False
-        )
+            # aplica normalizações
+            chunk = normalize_datetimes(chunk)
+            chunk = sanitize_non_scalars(chunk)
+            chunk = force_base_nulls(chunk)
 
-        # casas espelhos
-        casas_espelhos = {
-            567515: 451446, 747169: 345511, 588400: 747861, 588406: 747861, 441403: 747861,
-            614452: 341242, 747735: 341242, 747171: 379860, 379240: 747177, 747215: 334111,
-            747220: 380233, 614526: 488453, 747747: 488453, 614527: 488453, 575254: 511116,
-            747224: 445230, 747230: 334112, 563466: 590935, 747235: 443999, 614955: 495437,
-            747754: 495437, 747249: 598346, 747092: 379248, 747254: 425652, 746111: 514404,
-            735680: 498139
-        }
-        if "unit_id" in resultado.columns:
-            resultado["unit_id"] = pd.to_numeric(resultado["unit_id"], errors="coerce").astype("Int64")
-            resultado["unit_id"] = resultado["unit_id"].replace(casas_espelhos)
+            # substitui casas espelhos
+            casas_espelhos = {
+                567515: 451446, 747169: 345511, 588400: 747861, 588406: 747861, 441403: 747861,
+                614452: 341242, 747735: 341242, 747171: 379860, 379240: 747177, 747215: 334111,
+                747220: 380233, 614526: 488453, 747747: 488453, 614527: 488453, 575254: 511116,
+                747224: 445230, 747230: 334112, 563466: 590935, 747235: 443999, 614955: 495437,
+                747754: 495437, 747249: 598346, 747092: 379248, 747254: 425652, 746111: 514404,
+                735680: 498139
+            }
+            if "unit_id" in chunk.columns:
+                chunk["unit_id"] = pd.to_numeric(chunk["unit_id"], errors="coerce").astype("Int64")
+                chunk["unit_id"] = chunk["unit_id"].replace(casas_espelhos)
 
-        # normalizações
-        resultado = normalize_datetimes(resultado)
-        resultado = sanitize_non_scalars(resultado)
-        resultado = force_base_nulls(resultado)
+            dtype = build_dtype_map(chunk)
 
-        # mapeia dtype explícito
-        dtype = build_dtype_map(resultado)
-
-        table_name = "tb_reservas_por_data"
-        try:
-            # Dica: use method=None (sem multi) para capturar o erro raiz de forma mais clara.
+            # grava incrementalmente
             with engine.begin() as conn:
-                resultado.to_sql(
+                chunk.to_sql(
                     table_name,
                     con=conn,
-                    if_exists="replace",
+                    if_exists="replace" if i == 0 else "append",
                     index=False,
-                    chunksize=None,   # um único insert por linha (diagnóstico)
-                    method=None,      # <— troque para "multi" quando estabilizar
+                    chunksize=1000,
+                    method="multi",
                     dtype=dtype
                 )
-            print(f"Dados Gravados Com Sucesso em {table_name}. Linhas: {len(resultado)}")
-        except SQLAlchemyError as e:
-            print("Erro ao gravar no MySQL via to_sql (root cause abaixo):")
-            print(e)
-            traceback.print_exc()
-            raise
+
+            total_linhas += len(chunk)
+            print(f"[chunk {i}] Gravado com sucesso. Total acumulado: {total_linhas}")
+
+        print(f"[main] Processo concluído. Linhas totais gravadas: {total_linhas}")
+
+    except SQLAlchemyError as e:
+        print("Erro ao gravar no MySQL via to_sql (root cause abaixo):")
+        print(e)
+        traceback.print_exc()
+        raise
     finally:
         engine.dispose()
 
