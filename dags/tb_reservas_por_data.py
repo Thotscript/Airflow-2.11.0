@@ -105,12 +105,16 @@ def main():
         for i, chunk in enumerate(chunks):
             print(f"[chunk {i}] Linhas recebidas: {len(chunk)}")
 
-            # aplica normalizações
+            # --- FIX: Garante que colunas multiindex (r.*, p.*) sejam achatadas ---
+            if isinstance(chunk.columns, pd.MultiIndex):
+                chunk.columns = ['_'.join(map(str, col)).strip() for col in chunk.columns]
+
+            # --- Normalizações e sanitização ---
             chunk = normalize_datetimes(chunk)
             chunk = sanitize_non_scalars(chunk)
             chunk = force_base_nulls(chunk)
 
-            # substitui casas espelhos
+            # --- Substitui casas espelhos ---
             casas_espelhos = {
                 567515: 451446, 747169: 345511, 588400: 747861, 588406: 747861, 441403: 747861,
                 614452: 341242, 747735: 341242, 747171: 379860, 379240: 747177, 747215: 334111,
@@ -125,7 +129,7 @@ def main():
 
             dtype = build_dtype_map(chunk)
 
-            # grava incrementalmente
+            # --- Grava incrementalmente ---
             with engine.begin() as conn:
                 chunk.to_sql(
                     table_name,
