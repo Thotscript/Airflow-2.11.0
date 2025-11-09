@@ -1,3 +1,4 @@
+import time
 import json
 import traceback
 from urllib.parse import quote_plus
@@ -21,86 +22,50 @@ DB_HOST = "host.docker.internal"
 DB_PORT = 3306
 DB_NAME = "ovh_silver"
 
-# =========================
-# SQL com colunas únicas (corrigido)
-# =========================
-SQL_FINAL = """
-SELECT 
-    -- Campos da tb_reservas
-    r.id AS r_id,
-    r.status_id AS r_status_id,
-    r.user_id AS r_user_id,
-    r.unit_id AS r_unit_id,
-    r.start_date AS r_start_date,
-    r.end_date AS r_end_date,
-    r.created_at AS r_created_at,
-    r.updated_at AS r_updated_at,
-    r.total_price AS r_total_price,
-    r.currency AS r_currency,
-    r.channel AS r_channel,
-    r.notes AS r_notes,
-
-    -- Campos da tb_reservas_price_day
-    p.id AS p_id,
-    p.reservation_id AS p_reservation_id,
-    p.date AS p_date,
-    p.price AS p_price,
-    p.currency AS p_currency,
-    p.created_at AS p_created_at,
-    p.updated_at AS p_updated_at
-
-FROM tb_reservas AS r
-LEFT JOIN tb_reservas_price_day AS p
-  ON r.id = p.reservation_id
-WHERE r.status_id IN (4,5,6,7);
-"""
+TABLE_OUT = "tb_reservas_por_data"
 
 
 # =========================
 # Funções utilitárias
 # =========================
 def sanitize_non_scalars(df: pd.DataFrame) -> pd.DataFrame:
+    """Converte listas, dicts e sets em JSON strings"""
     def is_non_scalar(v):
         return isinstance(v, (dict, list, set, tuple))
 
     out = df.copy()
     conv = []
     for col in out.columns:
-        if out[col].dtype == "object":
-            if out[col].map(is_non_scalar).any():
-                out[col] = out[col].apply(
-                    lambda v: json.dumps(list(v), ensure_ascii=False)
-                    if isinstance(v, set)
-                    else (json.dumps(v, ensure_ascii=False) if is_non_scalar(v) else v)
-                )
-                conv.append(col)
+        if out[col].dtype == "object" and out[col].map(is_non_scalar).any():
+            out[col] = out[col].apply(
+                lambda v: json.dumps(list(v), ensure_ascii=False)
+                if isinstance(v, set)
+                else (json.dumps(v, ensure_ascii=False) if is_non_scalar(v) else v)
+            )
+            conv.append(col)
     if conv:
         print(f"[sanitize_non_scalars] Colunas convertidas para JSON string: {conv}")
     return out
 
 
 def normalize_datetimes(df: pd.DataFrame) -> pd.DataFrame:
+    """Converte colunas de texto em datetime, tolerando múltiplos formatos"""
     out = df.copy()
     for col in out.columns:
         if out[col].dtype == "object":
-            try:
-                out[col] = pd.to_datetime(out[col], format="%Y-%m-%d %H:%M:%S", errors="coerce")
-            except Exception:
-                try:
-                    out[col] = pd.to_datetime(out[col], format="%d/%m/%Y %H:%M:%S", errors="coerce")
-                except Exception:
-                    out[col] = pd.to_datetime(out[col], errors="coerce")
-
+            out[col] = pd.to_datetime(out[col], errors="coerce", utc=False)
     for col in out.select_dtypes(include=["datetimetz"]).columns:
         out[col] = out[col].dt.tz_convert("UTC").dt.tz_localize(None)
     return out
 
 
 def force_base_nulls(df: pd.DataFrame) -> pd.DataFrame:
+    """Substitui NaN por None"""
     return df.where(pd.notnull(df), None)
 
 
 def build_dtype_map(df: pd.DataFrame):
+    """Mapeia tipos pandas → tipos SQLAlchemy"""
     dtype = {}
     for col, dt in df.dtypes.items():
         if str(dt).startswith("datetime64"):
@@ -116,8 +81,44 @@ def build_dtype_map(df: pd.DataFrame):
     return dtype
 
 
+def process_chunk(chunk: pd.DataFrame) -> pd.DataFrame:
+    """Aplica as transformações específicas de negócio"""
+    # Normalizações
+    chunk = normalize_datetimes(chunk)
+    chunk = sanitize_non_scalars(chunk)
+    chunk = force_base_nulls(chunk)
+
+    # Casas espelhos
+    casas_espelhos = {
+        567515: 451446, 747169: 345511, 588400: 747861, 588406: 747861, 441403: 747861,
+        614452: 341242, 747735: 341242, 747171: 379860, 379240: 747177, 747215: 334111,
+        747220: 380233, 614526: 488453, 747747: 488453, 614527: 488453, 575254: 511116,
+        747224: 445230, 747230: 334112, 563466: 590935, 747235: 443999, 614955: 495437,
+        747754: 495437, 747249: 598346, 747092: 379248, 747254: 425652, 746111: 514404,
+        735680: 498139
+    }
+    if "unit_id" in chunk.columns:
+        chunk["unit_id"] = pd.to_numeric(chunk["unit_id"], errors="coerce").astype("Int64")
+        chunk["unit_id"] = chunk["unit_id"].replace(casas_espelhos)
+
+    # Atualização de creation_date para IDs específicos
+    novas_datas = {
+        33956627: "2023-10-21 00:00:00",
+        33967753: "2023-07-11 00:00:00",
+        33967744: "2023-06-28 00:00:00",
+        33967723: "2023-05-16 00:00:00",
+        33967713: "2023-05-05 00:00:00",
+        33967706: "2023-04-27 00:00:00",
+    }
+    if "creation_date" in chunk.columns:
+        for id_val, nova_data in novas_datas.items():
+            chunk.loc[chunk["id"] == id_val, "creation_date"] = nova_data
+
+    return chunk
+
+
 # =========================
-# Função principal
+# Função principal com CHUNKS + RATE LIMIT
 # =========================
 def main():
     engine = create_engine(
@@ -125,72 +126,84 @@ def main():
         pool_pre_ping=True,
     )
 
-    table_name = "tb_reservas_por_data"
-    CHUNK_SIZE = 50000
+    CHUNK_SIZE = 50000        # linhas por leitura
+    WRITE_SIZE = 5000         # linhas por escrita
+    RATE_LIMIT = 0.5          # segundos de pausa entre lotes
+    total_linhas = 0
+    first_write = True
 
     try:
-        print("[main] Iniciando leitura em chunks e merge SQL...")
-        chunks = pd.read_sql(SQL_FINAL, con=engine, chunksize=CHUNK_SIZE)
+        print("[main] Iniciando leitura incremental...")
 
-        total_linhas = 0
-        for i, chunk in enumerate(chunks):
-            print(f"[chunk {i}] Linhas recebidas: {len(chunk)}")
+        # Lê precos inteiros (geralmente menor)
+        precos = pd.read_sql("SELECT * FROM tb_reservas_price_day", engine)
 
-            # --- Normalizações e sanitização ---
-            chunk = normalize_datetimes(chunk)
-            chunk = sanitize_non_scalars(chunk)
-            chunk = force_base_nulls(chunk)
+        # Lê reservas em blocos
+        reservas_chunks = pd.read_sql(
+            "SELECT * FROM tb_reservas WHERE status_id IN (4,5,6,7)",
+            con=engine,
+            chunksize=CHUNK_SIZE,
+        )
 
-            # --- Substitui casas espelhos ---
-            casas_espelhos = {
-                567515: 451446, 747169: 345511, 588400: 747861, 588406: 747861, 441403: 747861,
-                614452: 341242, 747735: 341242, 747171: 379860, 379240: 747177, 747215: 334111,
-                747220: 380233, 614526: 488453, 747747: 488453, 614527: 488453, 575254: 511116,
-                747224: 445230, 747230: 334112, 563466: 590935, 747235: 443999, 614955: 495437,
-                747754: 495437, 747249: 598346, 747092: 379248, 747254: 425652, 746111: 514404,
-                735680: 498139
-            }
-            if "r_unit_id" in chunk.columns:
-                chunk["r_unit_id"] = pd.to_numeric(chunk["r_unit_id"], errors="coerce").astype("Int64")
-                chunk["r_unit_id"] = chunk["r_unit_id"].replace(casas_espelhos)
+        for i, reservas in enumerate(reservas_chunks):
+            print(f"[chunk {i}] Linhas de reservas recebidas: {len(reservas)}")
 
-            dtype = build_dtype_map(chunk)
+            # Merge parcial
+            merged = pd.merge(
+                reservas,
+                precos,
+                left_on="id",
+                right_on="reservation_id",
+                how="left",
+            )
 
-            # --- Grava incrementalmente ---
-            with engine.begin() as conn:
-                chunk.to_sql(
-                    table_name,
-                    con=conn,
-                    if_exists="replace" if i == 0 else "append",
-                    index=False,
-                    chunksize=1000,
-                    method="multi",
-                    dtype=dtype
-                )
+            # Processamento e limpeza
+            merged = process_chunk(merged)
+            dtype = build_dtype_map(merged)
 
-            total_linhas += len(chunk)
-            print(f"[chunk {i}] Gravado com sucesso. Total acumulado: {total_linhas}")
+            # Escrita em sublotes menores
+            for start in range(0, len(merged), WRITE_SIZE):
+                end = start + WRITE_SIZE
+                batch = merged.iloc[start:end]
 
-        print(f"[main] Processo concluído. Linhas totais gravadas: {total_linhas}")
+                with engine.begin() as conn:
+                    batch.to_sql(
+                        TABLE_OUT,
+                        con=conn,
+                        if_exists="replace" if first_write else "append",
+                        index=False,
+                        chunksize=WRITE_SIZE,
+                        method="multi",
+                        dtype=dtype,
+                    )
+
+                total_linhas += len(batch)
+                first_write = False
+                print(f"[chunk {i}] Gravação parcial: {len(batch)} linhas (total={total_linhas})")
+
+                time.sleep(RATE_LIMIT)
+
+        print(f"✅ Processo concluído. Linhas totais gravadas: {total_linhas}")
 
     except SQLAlchemyError as e:
-        print("Erro ao gravar no MySQL via to_sql (root cause abaixo):")
+        print("❌ Erro ao gravar no MySQL via to_sql:")
         print(e)
         traceback.print_exc()
         raise
     finally:
         engine.dispose()
+        print("🔒 Conexão encerrada.")
 
 
-# =================
+# =========================
 # Airflow DAG
-# =================
+# =========================
 SP_TZ = pendulum.timezone("America/Sao_Paulo")
 
 with DAG(
     dag_id="OVH-tb_reservas_por_data",
     start_date=pendulum.datetime(2025, 9, 23, 8, 0, tz=SP_TZ),
-    schedule="0 5 * * *",
+    schedule="0 5 * * *",  # executa todo dia às 5h
     catchup=False,
     tags=["Tabelas - OVH"],
 ) as dag:
