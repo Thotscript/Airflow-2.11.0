@@ -105,7 +105,16 @@ def main():
         for i, chunk in enumerate(chunks):
             print(f"[chunk {i}] Linhas recebidas: {len(chunk)}")
 
-            # --- FIX: Garante que colunas multiindex (r.*, p.*) sejam achatadas ---
+            # --- Garante nomes únicos de colunas (fix do erro de dtype) ---
+            # Pandas gera colunas duplicadas em joins tipo r.*, p.*; isso impede .dtype
+            if chunk.columns.duplicated().any():
+                chunk.columns = [
+                    f"{col}_{idx}" if chunk.columns.duplicated()[idx] else col
+                    for idx, col in enumerate(chunk.columns)
+                ]
+                print(f"[chunk {i}] Colunas duplicadas foram renomeadas automaticamente.")
+
+            # --- FIX adicional: se vier MultiIndex, achata ---
             if isinstance(chunk.columns, pd.MultiIndex):
                 chunk.columns = ['_'.join(map(str, col)).strip() for col in chunk.columns]
 
@@ -153,6 +162,7 @@ def main():
         raise
     finally:
         engine.dispose()
+
 
 
 # =================
