@@ -21,9 +21,34 @@ DB_HOST = "host.docker.internal"
 DB_PORT = 3306
 DB_NAME = "ovh_silver"
 
-# Merge direto no banco (evita carregar tabelas inteiras)
+# =========================
+# SQL com colunas únicas (corrigido)
+# =========================
 SQL_FINAL = """
-SELECT r.*, p.*
+SELECT 
+    -- Campos da tb_reservas
+    r.id AS r_id,
+    r.status_id AS r_status_id,
+    r.user_id AS r_user_id,
+    r.unit_id AS r_unit_id,
+    r.start_date AS r_start_date,
+    r.end_date AS r_end_date,
+    r.created_at AS r_created_at,
+    r.updated_at AS r_updated_at,
+    r.total_price AS r_total_price,
+    r.currency AS r_currency,
+    r.channel AS r_channel,
+    r.notes AS r_notes,
+
+    -- Campos da tb_reservas_price_day
+    p.id AS p_id,
+    p.reservation_id AS p_reservation_id,
+    p.date AS p_date,
+    p.price AS p_price,
+    p.currency AS p_currency,
+    p.created_at AS p_created_at,
+    p.updated_at AS p_updated_at
+
 FROM tb_reservas AS r
 LEFT JOIN tb_reservas_price_day AS p
   ON r.id = p.reservation_id
@@ -31,6 +56,9 @@ WHERE r.status_id IN (4,5,6,7);
 """
 
 
+# =========================
+# Funções utilitárias
+# =========================
 def sanitize_non_scalars(df: pd.DataFrame) -> pd.DataFrame:
     def is_non_scalar(v):
         return isinstance(v, (dict, list, set, tuple))
@@ -88,6 +116,9 @@ def build_dtype_map(df: pd.DataFrame):
     return dtype
 
 
+# =========================
+# Função principal
+# =========================
 def main():
     engine = create_engine(
         f"mysql+pymysql://{DB_USER}:{quote_plus(DB_PASS)}@{DB_HOST}:{DB_PORT}/{DB_NAME}?charset=utf8mb4",
@@ -95,7 +126,7 @@ def main():
     )
 
     table_name = "tb_reservas_por_data"
-    CHUNK_SIZE = 50000  # número de linhas por lote
+    CHUNK_SIZE = 50000
 
     try:
         print("[main] Iniciando leitura em chunks e merge SQL...")
@@ -104,19 +135,6 @@ def main():
         total_linhas = 0
         for i, chunk in enumerate(chunks):
             print(f"[chunk {i}] Linhas recebidas: {len(chunk)}")
-
-            # --- Garante nomes únicos de colunas (fix do erro de dtype) ---
-            # Pandas gera colunas duplicadas em joins tipo r.*, p.*; isso impede .dtype
-            if chunk.columns.duplicated().any():
-                chunk.columns = [
-                    f"{col}_{idx}" if chunk.columns.duplicated()[idx] else col
-                    for idx, col in enumerate(chunk.columns)
-                ]
-                print(f"[chunk {i}] Colunas duplicadas foram renomeadas automaticamente.")
-
-            # --- FIX adicional: se vier MultiIndex, achata ---
-            if isinstance(chunk.columns, pd.MultiIndex):
-                chunk.columns = ['_'.join(map(str, col)).strip() for col in chunk.columns]
 
             # --- Normalizações e sanitização ---
             chunk = normalize_datetimes(chunk)
@@ -132,9 +150,9 @@ def main():
                 747754: 495437, 747249: 598346, 747092: 379248, 747254: 425652, 746111: 514404,
                 735680: 498139
             }
-            if "unit_id" in chunk.columns:
-                chunk["unit_id"] = pd.to_numeric(chunk["unit_id"], errors="coerce").astype("Int64")
-                chunk["unit_id"] = chunk["unit_id"].replace(casas_espelhos)
+            if "r_unit_id" in chunk.columns:
+                chunk["r_unit_id"] = pd.to_numeric(chunk["r_unit_id"], errors="coerce").astype("Int64")
+                chunk["r_unit_id"] = chunk["r_unit_id"].replace(casas_espelhos)
 
             dtype = build_dtype_map(chunk)
 
@@ -162,7 +180,6 @@ def main():
         raise
     finally:
         engine.dispose()
-
 
 
 # =================
