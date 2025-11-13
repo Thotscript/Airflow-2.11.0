@@ -169,7 +169,8 @@ def fetch_confirmation_ids_from_mysql():
             SELECT DISTINCT confirmation_id
             FROM tb_reservas
             WHERE DATE(startdate) IN ({placeholders})
-              AND status_code NOT IN (6,8,10)
+              AND status_code NOT IN (6,8,10,1)
+              AND status_id NOT IN (6,8,10,1)
               AND confirmation_id > 0
         """
         cur.execute(sql, tuple(dates))
