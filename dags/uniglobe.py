@@ -45,8 +45,8 @@ MYSQL_CONFIG = {
 
 # Streamline
 STREAMLINE_URL = "https://web.streamlinevrs.com/api/json"
-TOKEN_KEY = "a43cb1b5ed27cce283ab2bb4df540037"
-TOKEN_SECRET = "72c7b8d5ba4b0ef14fe97a7e4179bdfa92cfc6ea"
+TOKEN_KEY = "d9cec367a327955392db9424e0462a79"
+TOKEN_SECRET = "6ec0ccc91eabaf773a9cd6ad5ba0acb377a6c958"
 HEADERS_JSON = {"Content-Type": "application/json"}
 
 # Saída
