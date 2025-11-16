@@ -775,6 +775,19 @@ def main():
     try:
         # Transação única para toda a recriação
         with engine.begin() as connection:
+            # ⚠️ Desabilita STRICT na sessão pra não quebrar em datas zoada
+            connection.execute(
+                text(
+                    """
+                    SET SESSION sql_mode = REPLACE(
+                        REPLACE(@@sql_mode, 'STRICT_TRANS_TABLES', ''),
+                        'STRICT_ALL_TABLES',
+                        ''
+                    );
+                    """
+                )
+            )
+
             # tb_houses (tabela de apoio)
             connection.execute(text(sql_drop_tb_houses))
             connection.execute(text(sql_create_tb_houses))
