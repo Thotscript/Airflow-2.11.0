@@ -262,6 +262,9 @@ def get_property_data_from_streamline(df_administradora: pd.DataFrame) -> pd.Dat
     headers = {"Content-Type": "application/json"}
     property_list_total = pd.DataFrame()
 
+    TOKEN_KEY = "d9cec367a327955392db9424e0462a79"
+    TOKEN_SECRET = "6ec0ccc91eabaf773a9cd6ad5ba0acb377a6c958"
+
     for idx, row in df_administradora.iterrows():
         try:
             admin_name = row.get("Administradora", f"linha_{idx}")
@@ -272,8 +275,8 @@ def get_property_data_from_streamline(df_administradora: pd.DataFrame) -> pd.Dat
             data = {
                 "methodName": "GetPropertyListWordPress",
                 "params": {
-                    "token_key": row["token_key"],
-                    "token_secret": row["token_secret"]
+                    "token_key": TOKEN_KEY,
+                    "token_secret": TOKEN_SECRET
                 }
             }
 
