@@ -104,7 +104,7 @@ def main():
     df_property = pd.read_sql(
         """
         SELECT id, Administradora 
-        FROM property_list_wordpress
+        FROM tb_property_list_wordpress
         WHERE renting_type = 'RENTING'
         """,
         con=engine
