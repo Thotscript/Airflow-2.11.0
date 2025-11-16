@@ -43,8 +43,10 @@ DIA_AJUSTADO = 'dia_ajustado'
 
 # Config Streamline
 STREAMLINE_URL = "https://web.streamlinevrs.com/api/json"
-SELECTED_COLUMNS = ['id', 'name', 'location_name', 'bedrooms_number', 'bathrooms_number', 
-                   'condo_type_name', 'condo_type_group_name', 'max_adults', 'renting_type']
+SELECTED_COLUMNS = [
+    'id', 'name', 'location_name', 'bedrooms_number', 'bathrooms_number',
+    'condo_type_name', 'condo_type_group_name', 'max_adults', 'renting_type'
+]
 
 # Config Google Sheets OAuth
 SCOPES = [
@@ -60,6 +62,7 @@ TOKEN_FILE = os.path.join(BASE_DIR, 'Tokens', 'sheets_token.json')
 # FUNÇÕES MYSQL
 # ============================================================================
 
+
 def get_mysql_connection():
     """Cria e retorna uma conexão MySQL"""
     return mysql.connector.connect(**MYSQL_CONFIG)
@@ -68,7 +71,7 @@ def get_mysql_connection():
 def save_to_mysql(df: pd.DataFrame, table_name: str, if_exists: str = 'replace'):
     """
     Salva DataFrame no MySQL usando mysql.connector
-    
+
     Args:
         df: DataFrame a ser salvo
         table_name: Nome da tabela
@@ -77,15 +80,15 @@ def save_to_mysql(df: pd.DataFrame, table_name: str, if_exists: str = 'replace')
     if df.empty:
         print(f"⚠️  DataFrame vazio, tabela '{table_name}' não foi criada")
         return
-    
+
     conn = get_mysql_connection()
     cursor = conn.cursor()
-    
+
     try:
         # Se for replace, dropa a tabela existente
         if if_exists == 'replace':
             cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
-            
+
             # Cria a tabela com base nas colunas do DataFrame
             columns_def = []
             for col in df.columns:
@@ -101,27 +104,27 @@ def save_to_mysql(df: pd.DataFrame, table_name: str, if_exists: str = 'replace')
                     col_type = 'BOOLEAN'
                 else:
                     col_type = 'TEXT'
-                
+
                 columns_def.append(f"`{col}` {col_type}")
-            
+
             create_table_sql = f"CREATE TABLE {table_name} ({', '.join(columns_def)})"
             cursor.execute(create_table_sql)
             print(f"✓ Tabela '{table_name}' criada")
-        
+
         # Insere os dados
         cols = ', '.join([f"`{col}`" for col in df.columns])
         placeholders = ', '.join(['%s'] * len(df.columns))
         insert_sql = f"INSERT INTO {table_name} ({cols}) VALUES ({placeholders})"
-        
+
         # Converte DataFrame para lista de tuplas
         data = [tuple(row) for row in df.replace({np.nan: None}).values]
-        
+
         # Insere em lote
         cursor.executemany(insert_sql, data)
         conn.commit()
-        
+
         print(f"✓ {len(df)} linhas inseridas na tabela '{table_name}' ({if_exists})")
-        
+
     except mysql.connector.Error as e:
         print(f"✗ Erro ao salvar tabela '{table_name}': {str(e)}")
         conn.rollback()
@@ -134,17 +137,17 @@ def execute_sql(sql_query: str):
     """Executa query SQL no MySQL"""
     conn = get_mysql_connection()
     cursor = conn.cursor()
-    
+
     try:
         # Divide queries múltiplas por ponto-e-vírgula
         queries = [q.strip() for q in sql_query.split(';') if q.strip()]
-        
+
         for query in queries:
             cursor.execute(query)
-        
+
         conn.commit()
         print("✓ Query SQL executada com sucesso")
-        
+
     except mysql.connector.Error as e:
         print(f"✗ Erro ao executar SQL: {str(e)}")
         conn.rollback()
@@ -152,9 +155,37 @@ def execute_sql(sql_query: str):
         cursor.close()
         conn.close()
 
+
+def ensure_append_table_from_base(base_table: str, append_table: str):
+    """
+    Garante que a tabela append exista com a mesma estrutura da base.
+    Se não existir, cria com CREATE TABLE append LIKE base.
+    """
+    conn = get_mysql_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SHOW TABLES LIKE %s", (append_table,))
+        exists = cursor.fetchone() is not None
+
+        if not exists:
+            print(f"⚠️ Tabela '{append_table}' não existe. Criando com mesma estrutura de '{base_table}'...")
+            cursor.execute(f"CREATE TABLE {append_table} LIKE {base_table}")
+            conn.commit()
+            print(f"✓ Tabela '{append_table}' criada com sucesso.")
+        else:
+            print(f"✓ Tabela '{append_table}' já existe.")
+    except mysql.connector.Error as e:
+        print(f"✗ Erro ao garantir tabela '{append_table}': {str(e)}")
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
+        conn.close()
+
 # ============================================================================
 # FUNÇÕES GOOGLE SHEETS
 # ============================================================================
+
 
 def _do_interactive_login() -> Credentials:
     flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
@@ -206,25 +237,25 @@ def read_sheet_to_df(sheet_name: str, spreadsheet_id: str = PLANILHA_ID) -> pd.D
             spreadsheetId=spreadsheet_id,
             range=f"'{sheet_name}'!A:ZZ"
         ).execute()
-        
+
         values = result.get('values', [])
         if not values:
             print(f"⚠️  Aba '{sheet_name}' está vazia")
             return pd.DataFrame()
-        
+
         headers = values[0]
         data = values[1:] if len(values) > 1 else []
-        
+
         max_cols = len(headers)
         normalized_data = []
         for row in data:
             normalized_row = row + [''] * (max_cols - len(row))
             normalized_data.append(normalized_row[:max_cols])
-        
+
         df = pd.DataFrame(normalized_data, columns=headers)
         print(f"✓ Aba '{sheet_name}': {len(df)} linhas × {len(df.columns)} colunas")
         return df
-        
+
     except Exception as e:
         print(f"✗ Erro ao ler aba '{sheet_name}': {str(e)}")
         return pd.DataFrame()
@@ -233,24 +264,25 @@ def read_sheet_to_df(sheet_name: str, spreadsheet_id: str = PLANILHA_ID) -> pd.D
 def load_all_sheets() -> dict:
     sheet_names = [MAKE_TYPE, CANAIS, NON_RENTING, STATUS_VENDA, ADMINISTRADORA, DIA_AJUSTADO]
     dataframes = {}
-    
-    print(f"\n{'='*60}")
+
+    print(f"\n{'=' * 60}")
     print(f"Carregando planilha: {PLANILHA_ID}")
-    print(f"{'='*60}\n")
-    
+    print(f"{'=' * 60}\n")
+
     for sheet_name in sheet_names:
         df = read_sheet_to_df(sheet_name)
         dataframes[sheet_name] = df
-    
-    print(f"{'='*60}")
+
+    print(f"{'=' * 60}")
     print(f"✓ Total de abas carregadas: {len(dataframes)}")
-    print(f"{'='*60}\n")
-    
+    print(f"{'=' * 60}\n")
+
     return dataframes
 
 # ============================================================================
 # FUNÇÕES DE PROCESSAMENTO
 # ============================================================================
+
 
 def get_property_data_from_streamline(df_administradora: pd.DataFrame) -> pd.DataFrame:
     """
@@ -262,6 +294,7 @@ def get_property_data_from_streamline(df_administradora: pd.DataFrame) -> pd.Dat
     headers = {"Content-Type": "application/json"}
     property_list_total = pd.DataFrame()
 
+    # Tokens fixos (como você colocou)
     TOKEN_KEY = "d9cec367a327955392db9424e0462a79"
     TOKEN_SECRET = "6ec0ccc91eabaf773a9cd6ad5ba0acb377a6c958"
 
@@ -282,7 +315,6 @@ def get_property_data_from_streamline(df_administradora: pd.DataFrame) -> pd.Dat
 
             print(f"[DEBUG] Payload enviado para API (sem segredos):")
             print(f"         methodName: {data['methodName']}")
-            # NÃO imprimir token_key / token_secret por segurança
 
             response = requests.post(STREAMLINE_URL, data=json.dumps(data), headers=headers)
 
@@ -354,67 +386,66 @@ def get_property_data_from_streamline(df_administradora: pd.DataFrame) -> pd.Dat
     return property_list_total
 
 
-
 def create_calendario(df_dia_ajustado: pd.DataFrame) -> pd.DataFrame:
     """
     Cria calendário com flags YTD, MTD, L7D, SEMANA
     """
     print("\n📅 Criando calendário...")
-    
+
     start_date = datetime(2018, 1, 1)
-    end_date = datetime.now().replace(month=12, day=31) + timedelta(days=365*3)
+    end_date = datetime.now().replace(month=12, day=31) + timedelta(days=365 * 3)
     date_range = pd.date_range(start=start_date, end=end_date, freq="D")
-    
+
     calendario = pd.DataFrame({'data': date_range})
     calendario['ano'] = calendario['data'].dt.year
     calendario['mês'] = calendario['data'].dt.month
     calendario['AnoMes'] = calendario['ano'] * 100 + calendario['mês']
-    
+
     data_ajustada = datetime.now().date()
     calendario['Ano Comparação'] = 'Y-' + (data_ajustada.year - calendario['ano']).astype(str)
     calendario['Hoje'] = data_ajustada
-    
+
     # Formata data para merge ANTES de fazer o merge
     calendario['data_formatada'] = calendario['data'].dt.strftime('%d-%m-%Y')
-    
+
     # Realiza o merge com dia_ajustado
     if not df_dia_ajustado.empty and 'data' in df_dia_ajustado.columns:
         # Renomeia a coluna 'data' de df_dia_ajustado para evitar conflito
         df_dia_ajustado_copy = df_dia_ajustado.copy()
         df_dia_ajustado_copy.rename(columns={'data': 'data_ajustada_str'}, inplace=True)
-        
+
         calendario = pd.merge(
-            calendario, 
-            df_dia_ajustado_copy, 
-            left_on='data_formatada', 
-            right_on='data_ajustada_str', 
+            calendario,
+            df_dia_ajustado_copy,
+            left_on='data_formatada',
+            right_on='data_ajustada_str',
             how='left'
         )
-        
+
         # Remove colunas auxiliares
         calendario.drop(['data_formatada', 'data_ajustada_str'], axis=1, inplace=True, errors='ignore')
     else:
         calendario.drop('data_formatada', axis=1, inplace=True, errors='ignore')
-    
+
     # Calcula flags
     def calculate_flags(row):
         hoje = pd.to_datetime(row["Hoje"])
         dia_ajustado = pd.to_datetime(row.get("Dia_Ajustado", row["Hoje"]))
-        
+
         row["YTD"] = "YTD" if dia_ajustado < hoje else "YTG"
         row["MTD"] = "MTD" if dia_ajustado < hoje and hoje.month == dia_ajustado.month else "MTG"
-        
+
         days_diff = (hoje - dia_ajustado).days
         row["L7D"] = "L7D" if 0 < days_diff <= 7 else "-"
         row["SEMANA"] = "S" if 0 < days_diff <= 7 else "S-1" if 7 < days_diff <= 14 else "-"
-        
+
         return row
-    
+
     calendario = calendario.apply(calculate_flags, axis=1)
-    
+
     # Formata data final - AGORA a coluna 'data' ainda existe
     calendario['data'] = calendario['data'].dt.strftime('%d-%m-%Y')
-    
+
     print(f"✓ Calendário criado: {len(calendario)} dias")
     return calendario
 
@@ -424,10 +455,10 @@ def create_depara_casas():
     Cria a tabela tb_depara_casas no MySQL
     """
     print("\n🔗 Criando tabela de depara de casas...")
-    
+
     sql_query = """
     DROP TABLE IF EXISTS tb_depara_casas;
-    
+
     CREATE TABLE tb_depara_casas AS
     SELECT A.*, COALESCE(B.renting_type, 'NON-RENTING') AS renting_type 
     FROM (
@@ -466,7 +497,7 @@ def create_depara_casas():
     ) AS A
     LEFT JOIN tb_property_list_wordpress AS B ON A.id = B.id
     """
-    
+
     execute_sql(sql_query)
 
 # ============================================================================
@@ -488,7 +519,6 @@ with DAG(
         """Extrai dados do Google Sheets"""
         return load_all_sheets()
 
-
     @task
     def extract_streamline_data(dfs: dict):
         """Extrai dados do Streamline"""
@@ -496,36 +526,74 @@ with DAG(
         property_list = get_property_data_from_streamline(df_administradora)
         return property_list
 
-
     @task
     def process_and_save_tables(dfs: dict, property_list: pd.DataFrame):
         """Processa e salva todas as tabelas no MySQL"""
-        
+
         print("\n💾 Salvando tabelas no MySQL...")
-        
+
         # 1. Salvar tabelas de depara do Google Sheets
         save_to_mysql(dfs[MAKE_TYPE], 'tb_make_type_id', if_exists='replace')
         save_to_mysql(dfs[STATUS_VENDA], 'tb_status_vendas', if_exists='replace')
         save_to_mysql(dfs[CANAIS], 'tb_depara_canais', if_exists='replace')
         save_to_mysql(dfs[NON_RENTING], 'tb_non_renting', if_exists='replace')
-        
-        # 2. Salvar dados do Streamline
-        save_to_mysql(property_list, 'tb_property_list_wordpress', if_exists='replace')
-        save_to_mysql(property_list, 'tb_property_list_wordpress_append', if_exists='append')
-        
-        # 3. Criar e salvar calendário
+
+        # 2. Debug do DataFrame property_list
+        print("\n[DEBUG] ===============================")
+        print("[DEBUG] Informações do DataFrame 'property_list' antes de salvar no MySQL:")
+        print(f"[DEBUG] shape: {property_list.shape}")
+        print(f"[DEBUG] colunas: {list(property_list.columns)}")
+        if not property_list.empty:
+            print("[DEBUG] Primeiras 5 linhas de property_list:")
+            print(property_list.head())
+        else:
+            print("[DEBUG] ATENÇÃO: 'property_list' está VAZIO!")
+
+        # 2.1. Tratar tabelas de propriedade somente se houver dados
+        if property_list.empty:
+            print("\n⚠️ DataFrame 'property_list' está vazio.")
+            print("⚠️ Pulando criação/sync de tb_property_list_wordpress, tb_property_list_wordpress_append e tb_depara_casas.")
+        else:
+            # 2.2. Salvar tabela base (replace)
+            print("\n[DEBUG] Salvando 'property_list' em tb_property_list_wordpress (replace)...")
+            save_to_mysql(property_list, 'tb_property_list_wordpress', if_exists='replace')
+
+            # 2.3. Garantir que a tabela append exista com a mesma estrutura
+            ensure_append_table_from_base('tb_property_list_wordpress', 'tb_property_list_wordpress_append')
+
+            # 2.4. Limpar dados da append antes de inserir (como você pediu)
+            print("\n🧹 Limpando dados da tabela 'tb_property_list_wordpress_append' antes do append...")
+            conn = get_mysql_connection()
+            cursor = conn.cursor()
+            try:
+                cursor.execute("DELETE FROM tb_property_list_wordpress_append")
+                conn.commit()
+                print("✓ Tabela 'tb_property_list_wordpress_append' limpa.")
+            except mysql.connector.Error as e:
+                print(f"✗ Erro ao limpar tabela 'tb_property_list_wordpress_append': {str(e)}")
+                conn.rollback()
+                raise
+            finally:
+                cursor.close()
+                conn.close()
+
+            # 2.5. Agora sim, fazer o append dos dados
+            print("[DEBUG] Fazendo append em tb_property_list_wordpress_append...")
+            save_to_mysql(property_list, 'tb_property_list_wordpress_append', if_exists='append')
+
+            # 2.6. Criar tabela de depara de casas, que depende dessas duas tabelas
+            print("\n[DEBUG] Chamando create_depara_casas()...")
+            create_depara_casas()
+
+        # 3. Criar e salvar calendário (independente do property_list)
         calendario = create_calendario(dfs[DIA_AJUSTADO])
         save_to_mysql(calendario, 'tb_calendario', if_exists='replace')
-        
-        # 4. Criar tabela de depara de casas
-        create_depara_casas()
-        
-        print("\n✅ Todas as tabelas foram processadas e salvas com sucesso!")
+
+        print("\n✅ Todas as tabelas foram processadas e salvas (dentro do possível)!")
 
     sheets_data = extract_sheets_data()
     streamline_data = extract_streamline_data(sheets_data)
     process_and_save_tables(sheets_data, streamline_data)
-
 
 # ============================================================================
 # EXECUÇÃO DIRETA (FORA DO AIRFLOW)
@@ -533,14 +601,14 @@ with DAG(
 
 if __name__ == "__main__":
     print("\n🚀 Iniciando processamento completo...\n")
-    
+
     # 1. Carregar dados do Google Sheets
     dfs = load_all_sheets()
-    
+
     # 2. Buscar dados do Streamline
     property_list = get_property_data_from_streamline(dfs[ADMINISTRADORA])
-    
+
     # 3. Processar e salvar todas as tabelas
     process_and_save_tables(dfs, property_list)
-    
+
     print("\n✅ Processamento concluído com sucesso!")
