@@ -39,7 +39,11 @@ def main():
         DROP TABLE IF EXISTS tb_houses;
     """
 
-    # Aqui normalizamos as datas via subqueries (A, B, C, F, G)
+    # Observação: toda normalização de datas é feita nas subqueries (A, B, C, F, G)
+    # usando um "parser seguro" que entende:
+    # - DD/MM/YYYY  (quando o 1º número > 12)
+    # - MM/DD/YYYY  (quando o 1º número <= 12)
+    # - YYYY-MM-DD  (ISO)
     sql_create_tb_houses = """
         CREATE TABLE tb_houses AS
         SELECT 
@@ -94,8 +98,14 @@ def main():
                 id,
                 Administradora,
                 CASE
-                    WHEN `date` LIKE '%/%/%' THEN STR_TO_DATE(`date`, '%d/%m/%Y')
-                    ELSE `date`
+                    WHEN `date` REGEXP '^[0-9]{2}/[0-9]{2}/[0-9]{4}$' THEN
+                        CASE
+                            WHEN CAST(SUBSTRING_INDEX(`date`, '/', 1) AS UNSIGNED) > 12
+                            THEN STR_TO_DATE(`date`, '%d/%m/%Y')
+                            ELSE STR_TO_DATE(`date`, '%m/%d/%Y')
+                        END
+                    WHEN `date` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN `date`
+                    ELSE NULL
                 END AS date_norm
             FROM tb_unit_dates
         ) AS A
@@ -128,24 +138,54 @@ def main():
                 reservation_id,
                 location_name,
                 CASE
-                    WHEN `Date` LIKE '%/%/%' THEN STR_TO_DATE(`Date`, '%d/%m/%Y')
-                    ELSE `Date`
+                    WHEN `Date` REGEXP '^[0-9]{2}/[0-9]{2}/[0-9]{4}$' THEN
+                        CASE
+                            WHEN CAST(SUBSTRING_INDEX(`Date`, '/', 1) AS UNSIGNED) > 12
+                            THEN STR_TO_DATE(`Date`, '%d/%m/%Y')
+                            ELSE STR_TO_DATE(`Date`, '%m/%d/%Y')
+                        END
+                    WHEN `Date` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN `Date`
+                    ELSE NULL
                 END AS date_norm,
                 CASE
-                    WHEN creation_date LIKE '%/%/%' THEN STR_TO_DATE(creation_date, '%d/%m/%Y')
-                    ELSE creation_date
+                    WHEN creation_date REGEXP '^[0-9]{2}/[0-9]{2}/[0-9]{4}$' THEN
+                        CASE
+                            WHEN CAST(SUBSTRING_INDEX(creation_date, '/', 1) AS UNSIGNED) > 12
+                            THEN STR_TO_DATE(creation_date, '%d/%m/%Y')
+                            ELSE STR_TO_DATE(creation_date, '%m/%d/%Y')
+                        END
+                    WHEN creation_date REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN creation_date
+                    ELSE NULL
                 END AS creation_date_norm,
                 CASE
-                    WHEN startdate LIKE '%/%/%' THEN STR_TO_DATE(startdate, '%d/%m/%Y')
-                    ELSE startdate
+                    WHEN startdate REGEXP '^[0-9]{2}/[0-9]{2}/[0-9]{4}$' THEN
+                        CASE
+                            WHEN CAST(SUBSTRING_INDEX(startdate, '/', 1) AS UNSIGNED) > 12
+                            THEN STR_TO_DATE(startdate, '%d/%m/%Y')
+                            ELSE STR_TO_DATE(startdate, '%m/%d/%Y')
+                        END
+                    WHEN startdate REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN startdate
+                    ELSE NULL
                 END AS startdate_norm,
                 CASE
-                    WHEN enddate LIKE '%/%/%' THEN STR_TO_DATE(enddate, '%d/%m/%Y')
-                    ELSE enddate
+                    WHEN enddate REGEXP '^[0-9]{2}/[0-9]{2}/[0-9]{4}$' THEN
+                        CASE
+                            WHEN CAST(SUBSTRING_INDEX(enddate, '/', 1) AS UNSIGNED) > 12
+                            THEN STR_TO_DATE(enddate, '%d/%m/%Y')
+                            ELSE STR_TO_DATE(enddate, '%m/%d/%Y')
+                        END
+                    WHEN enddate REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN enddate
+                    ELSE NULL
                 END AS enddate_norm,
                 CASE
-                    WHEN last_updated LIKE '%/%/%' THEN STR_TO_DATE(last_updated, '%d/%m/%Y')
-                    ELSE last_updated
+                    WHEN last_updated REGEXP '^[0-9]{2}/[0-9]{2}/[0-9]{4}$' THEN
+                        CASE
+                            WHEN CAST(SUBSTRING_INDEX(last_updated, '/', 1) AS UNSIGNED) > 12
+                            THEN STR_TO_DATE(last_updated, '%d/%m/%Y')
+                            ELSE STR_TO_DATE(last_updated, '%m/%d/%Y')
+                        END
+                    WHEN last_updated REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN last_updated
+                    ELSE NULL
                 END AS last_updated_norm
             FROM tb_reservas_por_data
         ) AS B
@@ -159,8 +199,14 @@ def main():
                 `rate_type.rate`,
                 `rate_type.minStay`,
                 CASE
-                    WHEN `date` LIKE '%/%/%' THEN STR_TO_DATE(`date`, '%d/%m/%Y')
-                    ELSE `date`
+                    WHEN `date` REGEXP '^[0-9]{2}/[0-9]{2}/[0-9]{4}$' THEN
+                        CASE
+                            WHEN CAST(SUBSTRING_INDEX(`date`, '/', 1) AS UNSIGNED) > 12
+                            THEN STR_TO_DATE(`date`, '%d/%m/%Y')
+                            ELSE STR_TO_DATE(`date`, '%m/%d/%Y')
+                        END
+                    WHEN `date` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN `date`
+                    ELSE NULL
                 END AS date_norm
             FROM tb_metas
         ) AS C
@@ -175,8 +221,14 @@ def main():
                 Ocupação AS Ocupacao,
                 Season,
                 CASE
-                    WHEN `Data` LIKE '%/%/%' THEN STR_TO_DATE(`Data`, '%d/%m/%Y')
-                    ELSE `Data`
+                    WHEN `Data` REGEXP '^[0-9]{2}/[0-9]{2}/[0-9]{4}$' THEN
+                        CASE
+                            WHEN CAST(SUBSTRING_INDEX(`Data`, '/', 1) AS UNSIGNED) > 12
+                            THEN STR_TO_DATE(`Data`, '%d/%m/%Y')
+                            ELSE STR_TO_DATE(`Data`, '%m/%d/%Y')
+                        END
+                    WHEN `Data` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN `Data`
+                    ELSE NULL
                 END AS data_norm
             FROM tb_ocupacao_meta
         ) AS F
@@ -189,8 +241,14 @@ def main():
                 minStay,
                 rate,
                 CASE
-                    WHEN `date` LIKE '%/%/%' THEN STR_TO_DATE(`date`, '%d/%m/%Y')
-                    ELSE `date`
+                    WHEN `date` REGEXP '^[0-9]{2}/[0-9]{2}/[0-9]{4}$' THEN
+                        CASE
+                            WHEN CAST(SUBSTRING_INDEX(`date`, '/', 1) AS UNSIGNED) > 12
+                            THEN STR_TO_DATE(`date`, '%d/%m/%Y')
+                            ELSE STR_TO_DATE(`date`, '%m/%d/%Y')
+                        END
+                    WHEN `date` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN `date`
+                    ELSE NULL
                 END AS date_norm
             FROM tb_price
         ) AS G
@@ -205,7 +263,7 @@ def main():
         DROP TABLE IF EXISTS tb_houses_geral;
     """
 
-    # Aqui também normalizamos datas nas subqueries/CTEs
+    # tb_houses_geral também normaliza datas nas subqueries
     sql_create_tb_houses_geral = """
         CREATE TABLE tb_houses_geral AS
         WITH tb_houses_parcial AS (
@@ -313,8 +371,14 @@ def main():
                     id,
                     Administradora,
                     CASE
-                        WHEN `date` LIKE '%/%/%' THEN STR_TO_DATE(`date`, '%d/%m/%Y')
-                        ELSE `date`
+                        WHEN `date` REGEXP '^[0-9]{2}/[0-9]{2}/[0-9]{4}$' THEN
+                            CASE
+                                WHEN CAST(SUBSTRING_INDEX(`date`, '/', 1) AS UNSIGNED) > 12
+                                THEN STR_TO_DATE(`date`, '%d/%m/%Y')
+                                ELSE STR_TO_DATE(`date`, '%m/%d/%Y')
+                            END
+                        WHEN `date` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN `date`
+                        ELSE NULL
                     END AS date_norm
                 FROM tb_unit_dates
             ) AS A
@@ -347,24 +411,54 @@ def main():
                     reservation_id,
                     location_name,
                     CASE
-                        WHEN `Date` LIKE '%/%/%' THEN STR_TO_DATE(`Date`, '%d/%m/%Y')
-                        ELSE `Date`
+                        WHEN `Date` REGEXP '^[0-9]{2}/[0-9]{2}/[0-9]{4}$' THEN
+                            CASE
+                                WHEN CAST(SUBSTRING_INDEX(`Date`, '/', 1) AS UNSIGNED) > 12
+                                THEN STR_TO_DATE(`Date`, '%d/%m/%Y')
+                                ELSE STR_TO_DATE(`Date`, '%m/%d/%Y')
+                            END
+                        WHEN `Date` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN `Date`
+                        ELSE NULL
                     END AS date_norm,
                     CASE
-                        WHEN creation_date LIKE '%/%/%' THEN STR_TO_DATE(creation_date, '%d/%m/%Y')
-                        ELSE creation_date
+                        WHEN creation_date REGEXP '^[0-9]{2}/[0-9]{2}/[0-9]{4}$' THEN
+                            CASE
+                                WHEN CAST(SUBSTRING_INDEX(creation_date, '/', 1) AS UNSIGNED) > 12
+                                THEN STR_TO_DATE(creation_date, '%d/%m/%Y')
+                                ELSE STR_TO_DATE(creation_date, '%m/%d/%Y')
+                            END
+                        WHEN creation_date REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN creation_date
+                        ELSE NULL
                     END AS creation_date_norm,
                     CASE
-                        WHEN startdate LIKE '%/%/%' THEN STR_TO_DATE(startdate, '%d/%m/%Y')
-                        ELSE startdate
+                        WHEN startdate REGEXP '^[0-9]{2}/[0-9]{2}/[0-9]{4}$' THEN
+                            CASE
+                                WHEN CAST(SUBSTRING_INDEX(startdate, '/', 1) AS UNSIGNED) > 12
+                                THEN STR_TO_DATE(startdate, '%d/%m/%Y')
+                                ELSE STR_TO_DATE(startdate, '%m/%d/%Y')
+                            END
+                        WHEN startdate REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN startdate
+                        ELSE NULL
                     END AS startdate_norm,
                     CASE
-                        WHEN enddate LIKE '%/%/%' THEN STR_TO_DATE(enddate, '%d/%m/%Y')
-                        ELSE enddate
+                        WHEN enddate REGEXP '^[0-9]{2}/[0-9]{2}/[0-9]{4}$' THEN
+                            CASE
+                                WHEN CAST(SUBSTRING_INDEX(enddate, '/', 1) AS UNSIGNED) > 12
+                                THEN STR_TO_DATE(enddate, '%d/%m/%Y')
+                                ELSE STR_TO_DATE(enddate, '%m/%d/%Y')
+                            END
+                        WHEN enddate REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN enddate
+                        ELSE NULL
                     END AS enddate_norm,
                     CASE
-                        WHEN last_updated LIKE '%/%/%' THEN STR_TO_DATE(last_updated, '%d/%m/%Y')
-                        ELSE last_updated
+                        WHEN last_updated REGEXP '^[0-9]{2}/[0-9]{2}/[0-9]{4}$' THEN
+                            CASE
+                                WHEN CAST(SUBSTRING_INDEX(last_updated, '/', 1) AS UNSIGNED) > 12
+                                THEN STR_TO_DATE(last_updated, '%d/%m/%Y')
+                                ELSE STR_TO_DATE(last_updated, '%m/%d/%Y')
+                            END
+                        WHEN last_updated REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN last_updated
+                        ELSE NULL
                     END AS last_updated_norm
                 FROM tb_reservas_por_data
             ) AS B
@@ -378,8 +472,14 @@ def main():
                     `rate_type.rate`,
                     `rate_type.minStay`,
                     CASE
-                        WHEN `date` LIKE '%/%/%' THEN STR_TO_DATE(`date`, '%d/%m/%Y')
-                        ELSE `date`
+                        WHEN `date` REGEXP '^[0-9]{2}/[0-9]{2}/[0-9]{4}$' THEN
+                            CASE
+                                WHEN CAST(SUBSTRING_INDEX(`date`, '/', 1) AS UNSIGNED) > 12
+                                THEN STR_TO_DATE(`date`, '%d/%m/%Y')
+                                ELSE STR_TO_DATE(`date`, '%m/%d/%Y')
+                            END
+                        WHEN `date` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN `date`
+                        ELSE NULL
                     END AS date_norm
                 FROM tb_metas
             ) AS C
@@ -398,8 +498,14 @@ def main():
                     Season,
                     Temporada,
                     CASE
-                        WHEN `Data` LIKE '%/%/%' THEN STR_TO_DATE(`Data`, '%d/%m/%Y')
-                        ELSE `Data`
+                        WHEN `Data` REGEXP '^[0-9]{2}/[0-9]{2}/[0-9]{4}$' THEN
+                            CASE
+                                WHEN CAST(SUBSTRING_INDEX(`Data`, '/', 1) AS UNSIGNED) > 12
+                                THEN STR_TO_DATE(`Data`, '%d/%m/%Y')
+                                ELSE STR_TO_DATE(`Data`, '%m/%d/%Y')
+                            END
+                        WHEN `Data` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN `Data`
+                        ELSE NULL
                     END AS data_norm
                 FROM tb_ocupacao_meta
             ) AS F
@@ -412,8 +518,14 @@ def main():
                     minStay,
                     rate,
                     CASE
-                        WHEN `date` LIKE '%/%/%' THEN STR_TO_DATE(`date`, '%d/%m/%Y')
-                        ELSE `date`
+                        WHEN `date` REGEXP '^[0-9]{2}/[0-9]{2}/[0-9]{4}$' THEN
+                            CASE
+                                WHEN CAST(SUBSTRING_INDEX(`date`, '/', 1) AS UNSIGNED) > 12
+                                THEN STR_TO_DATE(`date`, '%d/%m/%Y')
+                                ELSE STR_TO_DATE(`date`, '%m/%d/%Y')
+                            END
+                        WHEN `date` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN `date`
+                        ELSE NULL
                     END AS date_norm
                 FROM tb_price
             ) AS G
