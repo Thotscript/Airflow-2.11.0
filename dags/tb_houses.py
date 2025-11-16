@@ -552,7 +552,7 @@ def main():
                 MAX(Date_House) AS latest_date_house_with_reserva,
                 MIN(Date_House) AS earliest_date_house_with_reserva,
                 NOW() AS atualizacao
-            FROM tb_houses
+            FROM tb_houses_parcial     -- ✅ CORREÇÃO: antes era tb_houses
             WHERE id_reserva > 0
               AND creation_date IS NOT NULL
               AND Date_House IS NOT NULL
@@ -578,7 +578,7 @@ def main():
     try:
         # Transação única para toda a recriação
         with engine.begin() as connection:
-            # tb_houses
+            # tb_houses (tabela de apoio)
             connection.execute(text(sql_drop_tb_houses))
             connection.execute(text(sql_create_tb_houses))
             print("tb_houses criada/atualizada com sucesso (MySQL).")
