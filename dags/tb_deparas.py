@@ -372,7 +372,7 @@ def create_depara_casas():
         FROM (
             SELECT id, name, location_name, bedrooms_number, bathrooms_number, 
                    condo_type_name, condo_type_group_name, renting_type, Administradora 
-            FROM property_list_wordpress
+            FROM tb_property_list_wordpress
             
             UNION
             
@@ -388,7 +388,7 @@ def create_depara_casas():
             FROM (
                 SELECT *, 
                        ROW_NUMBER() OVER (PARTITION BY id ORDER BY Data_Carga DESC) AS RowNum
-                FROM property_list_wordpress_append
+                FROM tb_property_list_wordpress_append
             ) AS SortedResults
             WHERE RowNum = 1
             GROUP BY id
@@ -400,7 +400,7 @@ def create_depara_casas():
             FROM tb_non_renting
         ) AS CombinedData
     ) AS A
-    LEFT JOIN property_list_wordpress AS B ON A.id = B.id
+    LEFT JOIN tb_property_list_wordpress AS B ON A.id = B.id
     """
     
     execute_sql(sql_query)
