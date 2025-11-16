@@ -8,7 +8,6 @@ import pandas as pd
 import requests
 from sqlalchemy import create_engine, text, inspect
 from urllib.parse import quote_plus
-from ratelimit import limits, sleep_and_retry
 import pendulum
 from airflow import DAG
 from airflow.decorators import task
@@ -30,7 +29,7 @@ DB_PORT = 3306
 DB_NAME = "ovh_silver"
 
 # ---------------------------------------------------------
-# CONTROLE DE THROTTLE SIMPLES
+# CONTROLE DE THROTTLE SIMPLES (SEM LIB EXTERNA)
 # ---------------------------------------------------------
 WINDOW_SEC = 60
 MAX_CALLS = 95
@@ -38,17 +37,21 @@ _call_times = deque()
 
 
 def throttle():
-    """Controle simples de taxa adicional (além do decorator de ratelimit)."""
+    """
+    Controle de taxa: máximo ~MAX_CALLS requisições em WINDOW_SEC segundos.
+    Sem libs externas.
+    """
     now = time.time()
     _call_times.append(now)
 
-    # remove chamadas mais antigas que 60s
+    # remove chamadas mais antigas que WINDOW_SEC
     while _call_times and (now - _call_times[0]) > WINDOW_SEC:
         _call_times.popleft()
 
     if len(_call_times) >= MAX_CALLS:
         sleep_for = WINDOW_SEC - (now - _call_times[0])
         if sleep_for > 0:
+            print(f"[THROTTLE] Atingiu limite, dormindo {sleep_for:.2f}s")
             time.sleep(sleep_for)
 
 
@@ -60,11 +63,10 @@ headers = {
 }
 
 
-@sleep_and_retry
-@limits(calls=200, period=60)
 def get_unit_data(id_unit, admin, today, end_date, now_str):
     """
     Chama a API do Streamline para obter as rates de uma unidade.
+    Usa throttle manual para respeitar limite de requisições.
     """
     data = {
         "methodName": "GetPropertyRates",
@@ -80,7 +82,7 @@ def get_unit_data(id_unit, admin, today, end_date, now_str):
         }
     }
 
-    # throttle extra (opcional)
+    # throttle manual
     throttle()
 
     response = requests.post(API_URL, data=json.dumps(data), headers=headers)
@@ -129,13 +131,13 @@ def main():
     )
     df_upload_old = pd.read_excel(sheet_url)
 
-    # 3) Grava em tb_metas e tb_metas_unit_id
+    # 3) Grava em tb_metas
     df_upload_old.to_sql("tb_metas", engine, if_exists="append", index=False)
 
+    # cria df com apenas id_unit para tb_metas_unit_id
     unique_column_df = df_upload_old.drop_duplicates(subset=["id_unit"])
     unique_column_df = unique_column_df[["id_unit"]]
-    # isso vai CRIAR a tabela tb_metas_unit_id se ainda não existir
-    df_upload_old.to_sql("tb_metas_unit_id", engine, if_exists="append", index=False)
+    unique_column_df.to_sql("tb_metas_unit_id", engine, if_exists="append", index=False)
 
     # depois de gravar, atualiza info de existência (no caso da primeira vez)
     inspector = inspect(engine)
@@ -192,6 +194,7 @@ def main():
                 lambda x: get_unit_data(x[0], x[1], today, end_date, now_str),
                 params_list
             )
+            # pequena pausa extra para aliviar pressão
             time.sleep(0.6)
 
         # 6) Concatena resultados
@@ -228,7 +231,7 @@ with DAG(
 ) as dag:
 
     @task()
-    def tb_price():
+    def tb_metas():
         main()
 
-    tb_price()
+    tb_metas()
