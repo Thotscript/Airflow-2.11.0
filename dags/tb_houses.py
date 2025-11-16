@@ -39,12 +39,13 @@ def main():
         DROP TABLE IF EXISTS tb_houses;
     """
 
+    # Aqui normalizamos as datas via subqueries (A, B, C, F, G)
     sql_create_tb_houses = """
         CREATE TABLE tb_houses AS
         SELECT 
             A.id AS unit_id,
             A.Administradora,
-            A.date AS Date_House,
+            A.date_norm AS Date_House,
             B.id AS id_reserva,
             B.confirmation_id AS confirmation_id,
             B.client_id AS client_id,
@@ -62,10 +63,10 @@ def main():
             B.status_id AS status_id,
             B.hear_about_name AS hear_about_name,
             B.travelagent_name AS travelagent_name,
-            B.creation_date AS creation_date,
-            B.startdate AS startdate,
-            B.enddate AS enddate,
-            B.last_updated AS last_updated,
+            B.creation_date_norm AS creation_date,
+            B.startdate_norm AS startdate,
+            B.enddate_norm AS enddate,
+            B.last_updated_norm AS last_updated,
             B.season AS season,
             B.price AS price,
             B.extra AS extra,
@@ -83,26 +84,118 @@ def main():
             D.condo_type_group_name,
             D.max_adults,
             D.renting_type,
-            F.Ocupação,
+            F.Ocupacao AS Ocupação,
             F.Season AS temporada,
             G.minStay AS minstay_actual,
             G.rate AS rate_actual,
             NOW() AS atualizacao_
-        FROM tb_unit_dates AS A
-        LEFT JOIN tb_reservas_por_data AS B
-            ON CONCAT(A.id, A.Administradora, DATE_FORMAT(A.date, '%Y%m%d')) =
-               CONCAT(B.unit_id, B.Administradora_x, DATE_FORMAT(B.Date, '%Y%m%d'))
-        LEFT JOIN tb_metas AS C
-            ON CONCAT(A.id, A.Administradora, DATE_FORMAT(A.date, '%Y%m%d')) =
-               CONCAT(C.id_unit, C.Administradora, DATE_FORMAT(C.date, '%Y%m%d'))
+        FROM (
+            SELECT
+                id,
+                Administradora,
+                CASE
+                    WHEN `date` LIKE '%/%/%' THEN STR_TO_DATE(`date`, '%d/%m/%Y')
+                    ELSE `date`
+                END AS date_norm
+            FROM tb_unit_dates
+        ) AS A
+        LEFT JOIN (
+            SELECT
+                id,
+                unit_id,
+                Administradora_x,
+                confirmation_id,
+                client_id,
+                occupants,
+                occupants_small,
+                email,
+                first_name,
+                last_name,
+                days_number,
+                maketype_description,
+                type_name,
+                status_code,
+                price_nightly,
+                price_total,
+                status_id,
+                hear_about_name,
+                travelagent_name,
+                season,
+                price,
+                extra,
+                discount,
+                original_cost,
+                reservation_id,
+                location_name,
+                CASE
+                    WHEN `Date` LIKE '%/%/%' THEN STR_TO_DATE(`Date`, '%d/%m/%Y')
+                    ELSE `Date`
+                END AS date_norm,
+                CASE
+                    WHEN creation_date LIKE '%/%/%' THEN STR_TO_DATE(creation_date, '%d/%m/%Y')
+                    ELSE creation_date
+                END AS creation_date_norm,
+                CASE
+                    WHEN startdate LIKE '%/%/%' THEN STR_TO_DATE(startdate, '%d/%m/%Y')
+                    ELSE startdate
+                END AS startdate_norm,
+                CASE
+                    WHEN enddate LIKE '%/%/%' THEN STR_TO_DATE(enddate, '%d/%m/%Y')
+                    ELSE enddate
+                END AS enddate_norm,
+                CASE
+                    WHEN last_updated LIKE '%/%/%' THEN STR_TO_DATE(last_updated, '%d/%m/%Y')
+                    ELSE last_updated
+                END AS last_updated_norm
+            FROM tb_reservas_por_data
+        ) AS B
+            ON CONCAT(A.id, A.Administradora, DATE_FORMAT(A.date_norm, '%Y%m%d')) =
+               CONCAT(B.unit_id, B.Administradora_x, DATE_FORMAT(B.date_norm, '%Y%m%d'))
+        LEFT JOIN (
+            SELECT
+                id_unit,
+                Administradora,
+                `rate_type.season`,
+                `rate_type.rate`,
+                `rate_type.minStay`,
+                CASE
+                    WHEN `date` LIKE '%/%/%' THEN STR_TO_DATE(`date`, '%d/%m/%Y')
+                    ELSE `date`
+                END AS date_norm
+            FROM tb_metas
+        ) AS C
+            ON CONCAT(A.id, A.Administradora, DATE_FORMAT(A.date_norm, '%Y%m%d')) =
+               CONCAT(C.id_unit, C.Administradora, DATE_FORMAT(C.date_norm, '%Y%m%d'))
         LEFT JOIN tb_property_list_wordpress AS D
             ON CONCAT(A.id, A.Administradora) = CONCAT(D.id, D.Administradora)
-        LEFT JOIN tb_ocupacao_meta AS F
-            ON CONCAT(DATE_FORMAT(F.`Data`, '%Y%m%d'), F.Administradora) =
-               CONCAT(DATE_FORMAT(A.date, '%Y%m%d'), A.Administradora)
-        LEFT JOIN tb_price AS G
-            ON CONCAT(A.id, A.Administradora, DATE_FORMAT(A.date, '%Y%m%d')) =
-               CONCAT(G.id_unit, G.Administradora, DATE_FORMAT(G.date, '%Y%m%d'));
+        LEFT JOIN (
+            SELECT
+                `Data`,
+                Administradora,
+                Ocupação AS Ocupacao,
+                Season,
+                CASE
+                    WHEN `Data` LIKE '%/%/%' THEN STR_TO_DATE(`Data`, '%d/%m/%Y')
+                    ELSE `Data`
+                END AS data_norm
+            FROM tb_ocupacao_meta
+        ) AS F
+            ON CONCAT(DATE_FORMAT(F.data_norm, '%Y%m%d'), F.Administradora) =
+               CONCAT(DATE_FORMAT(A.date_norm, '%Y%m%d'), A.Administradora)
+        LEFT JOIN (
+            SELECT
+                id_unit,
+                Administradora,
+                minStay,
+                rate,
+                CASE
+                    WHEN `date` LIKE '%/%/%' THEN STR_TO_DATE(`date`, '%d/%m/%Y')
+                    ELSE `date`
+                END AS date_norm
+            FROM tb_price
+        ) AS G
+            ON CONCAT(A.id, A.Administradora, DATE_FORMAT(A.date_norm, '%Y%m%d')) =
+               CONCAT(G.id_unit, G.Administradora, DATE_FORMAT(G.date_norm, '%Y%m%d'));
     """
 
     # ---------------------------------------------------------
@@ -112,13 +205,14 @@ def main():
         DROP TABLE IF EXISTS tb_houses_geral;
     """
 
+    # Aqui também normalizamos datas nas subqueries/CTEs
     sql_create_tb_houses_geral = """
         CREATE TABLE tb_houses_geral AS
         WITH tb_houses_parcial AS (
             SELECT
                 A.id AS unit_id,
                 A.Administradora,
-                A.date AS Date_House,
+                A.date_norm AS Date_House,
                 B.id AS id_reserva,
                 B.confirmation_id AS confirmation_id,
                 B.client_id AS client_id,
@@ -136,10 +230,10 @@ def main():
                 B.status_id AS status_id,
                 B.hear_about_name AS hear_about_name,
                 B.travelagent_name AS travelagent_name,
-                B.creation_date AS creation_date,
-                B.startdate AS startdate,
-                B.enddate AS enddate,
-                B.last_updated AS last_updated,
+                B.creation_date_norm AS creation_date,
+                B.startdate_norm AS startdate,
+                B.enddate_norm AS enddate,
+                B.last_updated_norm AS last_updated,
                 B.season AS season,
                 B.price AS price,
                 B.extra AS extra,
@@ -157,7 +251,7 @@ def main():
                 D.condo_type_name,
                 D.condo_type_group_name,
                 COALESCE(D.renting_type, 'NON-RENTING') AS renting_type,
-                F.Ocupação,
+                F.Ocupacao AS Ocupação,
                 F.`Holiday for Year` AS Holiday_for_Year,
                 F.`Name of Holiday` AS Name_of_Holiday,
                 F.`Number Of Day Holidays` AS Number_Of_Day_Holidays,
@@ -166,31 +260,31 @@ def main():
                 G.minStay AS minstay_actual,
                 G.rate AS rate_actual,
                 COALESCE(H.Status, 'Disponivel') AS Status_Vendas,
-                YEAR(A.date) AS Ano,
-                MONTH(A.date) AS Mes,
+                YEAR(A.date_norm) AS Ano,
+                MONTH(A.date_norm) AS Mes,
                 CASE
-                    WHEN A.date >= CURDATE() THEN 1
+                    WHEN A.date_norm >= CURDATE() THEN 1
                     ELSE 0
                 END AS Considerar,
                 COALESCE(I.value, 'NÃO') AS valido_para_meta,
                 J.Canal,
-                DATEDIFF(A.date, B.creation_date) AS Advp_Dias,
+                DATEDIFF(A.date_norm, B.creation_date_norm) AS Advp_Dias,
                 CASE
-                    WHEN DATEDIFF(A.date, B.creation_date) IS NULL THEN '-'
-                    WHEN DATEDIFF(A.date, B.creation_date) <= 30 THEN '<= 30 days'
-                    WHEN DATEDIFF(A.date, B.creation_date) <= 60 THEN '<= 60 days'
-                    WHEN DATEDIFF(A.date, B.creation_date) <= 90 THEN '<= 90 days'
-                    WHEN DATEDIFF(A.date, B.creation_date) <= 120 THEN '<= 120 days'
-                    WHEN DATEDIFF(A.date, B.creation_date) <= 180 THEN '<= 180 days'
+                    WHEN DATEDIFF(A.date_norm, B.creation_date_norm) IS NULL THEN '-'
+                    WHEN DATEDIFF(A.date_norm, B.creation_date_norm) <= 30 THEN '<= 30 days'
+                    WHEN DATEDIFF(A.date_norm, B.creation_date_norm) <= 60 THEN '<= 60 days'
+                    WHEN DATEDIFF(A.date_norm, B.creation_date_norm) <= 90 THEN '<= 90 days'
+                    WHEN DATEDIFF(A.date_norm, B.creation_date_norm) <= 120 THEN '<= 120 days'
+                    WHEN DATEDIFF(A.date_norm, B.creation_date_norm) <= 180 THEN '<= 180 days'
                     ELSE 'Acima de 180 days'
                 END AS Advp_Faixas,
                 CASE
-                    WHEN DATEDIFF(A.date, B.creation_date) IS NULL THEN '-'
-                    WHEN DATEDIFF(A.date, B.creation_date) <= 30 THEN 1
-                    WHEN DATEDIFF(A.date, B.creation_date) <= 60 THEN 2
-                    WHEN DATEDIFF(A.date, B.creation_date) <= 90 THEN 3
-                    WHEN DATEDIFF(A.date, B.creation_date) <= 120 THEN 4
-                    WHEN DATEDIFF(A.date, B.creation_date) <= 180 THEN 5
+                    WHEN DATEDIFF(A.date_norm, B.creation_date_norm) IS NULL THEN '-'
+                    WHEN DATEDIFF(A.date_norm, B.creation_date_norm) <= 30 THEN 1
+                    WHEN DATEDIFF(A.date_norm, B.creation_date_norm) <= 60 THEN 2
+                    WHEN DATEDIFF(A.date_norm, B.creation_date_norm) <= 90 THEN 3
+                    WHEN DATEDIFF(A.date_norm, B.creation_date_norm) <= 120 THEN 4
+                    WHEN DATEDIFF(A.date_norm, B.creation_date_norm) <= 180 THEN 5
                     ELSE 6
                 END AS Advp_Ordem,
                 CASE
@@ -211,24 +305,120 @@ def main():
                 K.SEMANA,
                 K.`Ano Comparação` AS Ano_Comparacao,
                 L.`Ano Comparação` AS Ano_Comparacao_Check_In,
-                DATE_FORMAT(A.date, '%m. %b') AS Mes_Classificado_Check_In,
+                DATE_FORMAT(A.date_norm, '%m. %b') AS Mes_Classificado_Check_In,
                 L.Dia_Ajustado AS Dia_Ajustado_Check_in,
                 NOW() AS atualizacao_
-            FROM tb_unit_dates AS A
-            LEFT JOIN tb_reservas_por_data AS B
-                ON CONCAT(A.id, A.Administradora, DATE_FORMAT(A.date, '%Y%m%d')) =
-                   CONCAT(B.unit_id, B.Administradora_x, DATE_FORMAT(B.Date, '%Y%m%d'))
-            LEFT JOIN tb_metas AS C
-                ON CONCAT(A.id, A.Administradora, DATE_FORMAT(A.date, '%Y%m%d')) =
-                   CONCAT(C.id_unit, C.Administradora, DATE_FORMAT(C.date, '%Y%m%d'))
+            FROM (
+                SELECT
+                    id,
+                    Administradora,
+                    CASE
+                        WHEN `date` LIKE '%/%/%' THEN STR_TO_DATE(`date`, '%d/%m/%Y')
+                        ELSE `date`
+                    END AS date_norm
+                FROM tb_unit_dates
+            ) AS A
+            LEFT JOIN (
+                SELECT
+                    id,
+                    unit_id,
+                    Administradora_x,
+                    confirmation_id,
+                    client_id,
+                    occupants,
+                    occupants_small,
+                    email,
+                    first_name,
+                    last_name,
+                    days_number,
+                    maketype_description,
+                    type_name,
+                    status_code,
+                    price_nightly,
+                    price_total,
+                    status_id,
+                    hear_about_name,
+                    travelagent_name,
+                    season,
+                    price,
+                    extra,
+                    discount,
+                    original_cost,
+                    reservation_id,
+                    location_name,
+                    CASE
+                        WHEN `Date` LIKE '%/%/%' THEN STR_TO_DATE(`Date`, '%d/%m/%Y')
+                        ELSE `Date`
+                    END AS date_norm,
+                    CASE
+                        WHEN creation_date LIKE '%/%/%' THEN STR_TO_DATE(creation_date, '%d/%m/%Y')
+                        ELSE creation_date
+                    END AS creation_date_norm,
+                    CASE
+                        WHEN startdate LIKE '%/%/%' THEN STR_TO_DATE(startdate, '%d/%m/%Y')
+                        ELSE startdate
+                    END AS startdate_norm,
+                    CASE
+                        WHEN enddate LIKE '%/%/%' THEN STR_TO_DATE(enddate, '%d/%m/%Y')
+                        ELSE enddate
+                    END AS enddate_norm,
+                    CASE
+                        WHEN last_updated LIKE '%/%/%' THEN STR_TO_DATE(last_updated, '%d/%m/%Y')
+                        ELSE last_updated
+                    END AS last_updated_norm
+                FROM tb_reservas_por_data
+            ) AS B
+                ON CONCAT(A.id, A.Administradora, DATE_FORMAT(A.date_norm, '%Y%m%d')) =
+                   CONCAT(B.unit_id, B.Administradora_x, DATE_FORMAT(B.date_norm, '%Y%m%d'))
+            LEFT JOIN (
+                SELECT
+                    id_unit,
+                    Administradora,
+                    `rate_type.season`,
+                    `rate_type.rate`,
+                    `rate_type.minStay`,
+                    CASE
+                        WHEN `date` LIKE '%/%/%' THEN STR_TO_DATE(`date`, '%d/%m/%Y')
+                        ELSE `date`
+                    END AS date_norm
+                FROM tb_metas
+            ) AS C
+                ON CONCAT(A.id, A.Administradora, DATE_FORMAT(A.date_norm, '%Y%m%d')) =
+                   CONCAT(C.id_unit, C.Administradora, DATE_FORMAT(C.date_norm, '%Y%m%d'))
             LEFT JOIN tb_depara_casas AS D
                 ON CONCAT(A.id, A.Administradora) = CONCAT(D.id, D.Administradora)
-            LEFT JOIN tb_ocupacao_meta AS F
-                ON CONCAT(DATE_FORMAT(F.`Data`, '%Y%m%d'), F.Administradora) =
-                   CONCAT(DATE_FORMAT(A.date, '%Y%m%d'), A.Administradora)
-            LEFT JOIN tb_price AS G
-                ON CONCAT(A.id, A.Administradora, DATE_FORMAT(A.date, '%Y%m%d')) =
-                   CONCAT(G.id_unit, G.Administradora, DATE_FORMAT(G.date, '%Y%m%d'))
+            LEFT JOIN (
+                SELECT
+                    `Data`,
+                    Administradora,
+                    Ocupação AS Ocupacao,
+                    `Holiday for Year`,
+                    `Name of Holiday`,
+                    `Number Of Day Holidays`,
+                    Season,
+                    Temporada,
+                    CASE
+                        WHEN `Data` LIKE '%/%/%' THEN STR_TO_DATE(`Data`, '%d/%m/%Y')
+                        ELSE `Data`
+                    END AS data_norm
+                FROM tb_ocupacao_meta
+            ) AS F
+                ON CONCAT(DATE_FORMAT(F.data_norm, '%Y%m%d'), F.Administradora) =
+                   CONCAT(DATE_FORMAT(A.date_norm, '%Y%m%d'), A.Administradora)
+            LEFT JOIN (
+                SELECT
+                    id_unit,
+                    Administradora,
+                    minStay,
+                    rate,
+                    CASE
+                        WHEN `date` LIKE '%/%/%' THEN STR_TO_DATE(`date`, '%d/%m/%Y')
+                        ELSE `date`
+                    END AS date_norm
+                FROM tb_price
+            ) AS G
+                ON CONCAT(A.id, A.Administradora, DATE_FORMAT(A.date_norm, '%Y%m%d')) =
+                   CONCAT(G.id_unit, G.Administradora, DATE_FORMAT(G.date_norm, '%Y%m%d'))
             LEFT JOIN tb_status_vendas AS H
                 ON B.type_name = H.type_name
             LEFT JOIN tb_filtro_metas AS I
@@ -236,10 +426,10 @@ def main():
             LEFT JOIN tb_depara_canais AS J
                 ON B.type_name = J.Status
             LEFT JOIN tb_calendario AS K
-                ON DATE_FORMAT(B.creation_date, '%Y%m%d') =
+                ON DATE_FORMAT(B.creation_date_norm, '%Y%m%d') =
                    DATE_FORMAT(K.data, '%Y%m%d')
             LEFT JOIN tb_calendario AS L
-                ON DATE_FORMAT(A.date, '%Y%m%d') =
+                ON DATE_FORMAT(A.date_norm, '%Y%m%d') =
                    DATE_FORMAT(L.data, '%Y%m%d')
         ),
         primeira_venda AS (
