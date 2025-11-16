@@ -254,16 +254,21 @@ def load_all_sheets() -> dict:
 
 def get_property_data_from_streamline(df_administradora: pd.DataFrame) -> pd.DataFrame:
     """
-    Busca dados de propriedades da API Streamline
+    Busca dados de propriedades da API Streamline, com debug do retorno
     """
     print("\n📡 Buscando dados do Streamline...")
-    
+
     now = datetime.now().strftime('%Y/%m/%d %H:%M:%S')
     headers = {"Content-Type": "application/json"}
     property_list_total = pd.DataFrame()
-    
-    for _, row in df_administradora.iterrows():
+
+    for idx, row in df_administradora.iterrows():
         try:
+            admin_name = row.get("Administradora", f"linha_{idx}")
+            print(f"\n[DEBUG] ===============================")
+            print(f"[DEBUG] Chamando API para Administradora: {admin_name}")
+            print(f"[DEBUG] Índice da linha: {idx}")
+
             data = {
                 "methodName": "GetPropertyListWordPress",
                 "params": {
@@ -271,24 +276,80 @@ def get_property_data_from_streamline(df_administradora: pd.DataFrame) -> pd.Dat
                     "token_secret": row["token_secret"]
                 }
             }
-            
+
+            print(f"[DEBUG] Payload enviado para API (sem segredos):")
+            print(f"         methodName: {data['methodName']}")
+            # NÃO imprimir token_key / token_secret por segurança
+
             response = requests.post(STREAMLINE_URL, data=json.dumps(data), headers=headers)
-            data_dict = json.loads(response.content)
-            
-            if 'data' in data_dict and 'property' in data_dict['data']:
-                property_list = pd.json_normalize(data_dict["data"]["property"])
-                property_list = property_list.loc[:, SELECTED_COLUMNS]
-                property_list['Administradora'] = row["Administradora"]
+
+            print(f"[DEBUG] Status code da resposta: {response.status_code}")
+
+            # Conteúdo bruto (limitado)
+            raw_text_preview = response.text[:500].replace("\n", " ") if response.text else ""
+            print(f"[DEBUG] Prévia do corpo da resposta (primeiros 500 chars):")
+            print(raw_text_preview)
+
+            # Tentar converter para JSON
+            try:
+                data_dict = response.json()
+            except json.JSONDecodeError as e:
+                print(f"[DEBUG] ERRO ao decodificar JSON: {str(e)}")
+                print("[DEBUG] Conteúdo bruto completo (limitado a 1000 chars):")
+                print(response.text[:1000])
+                continue
+
+            # Debug da estrutura do JSON
+            print(f"[DEBUG] Chaves do JSON de topo: {list(data_dict.keys())}")
+            if "data" in data_dict:
+                print(f"[DEBUG] Subchaves em data: {list(data_dict['data'].keys())}")
+            else:
+                print("[DEBUG] JSON não contém chave 'data'")
+
+            # Verifica se há propriedades
+            properties = data_dict.get("data", {}).get("property", [])
+            print(f"[DEBUG] Qtde de propriedades retornadas para {admin_name}: {len(properties)}")
+
+            if properties:
+                property_list = pd.json_normalize(properties)
+
+                print(f"[DEBUG] Colunas retornadas pela API (antes do filtro):")
+                print(list(property_list.columns))
+
+                # Garante que só fica com as colunas selecionadas que existirem
+                cols_existentes = [c for c in SELECTED_COLUMNS if c in property_list.columns]
+                print(f"[DEBUG] Colunas usadas (interseção SELECTED_COLUMNS x resposta):")
+                print(cols_existentes)
+
+                property_list = property_list.loc[:, cols_existentes]
+                property_list['Administradora'] = admin_name
                 property_list['Data_Carga'] = now
+
+                print(f"[DEBUG] DataFrame parcial dessa administradora: {property_list.shape[0]} linhas x {property_list.shape[1]} colunas")
+                print("[DEBUG] Primeiras linhas:")
+                print(property_list.head())
+
                 property_list_total = pd.concat([property_list_total, property_list], ignore_index=True)
-            
+            else:
+                print(f"[DEBUG] Nenhuma propriedade retornada para {admin_name}")
+
             time.sleep(0.5)  # Evita sobrecarga na API
-            
+
         except Exception as e:
             print(f"⚠️  Erro ao buscar dados da administradora {row.get('Administradora', 'N/A')}: {str(e)}")
-    
+
+    print("\n[DEBUG] ===============================")
+    print(f"[DEBUG] TOTAL geral de propriedades coletadas: {len(property_list_total)}")
+    print(f"[DEBUG] Formato final de property_list_total: {property_list_total.shape}")
+    if not property_list_total.empty:
+        print("[DEBUG] Primeiras linhas do property_list_total:")
+        print(property_list_total.head())
+    else:
+        print("[DEBUG] property_list_total está VAZIO!")
+
     print(f"✓ Total de propriedades coletadas: {len(property_list_total)}")
     return property_list_total
+
 
 
 def create_calendario(df_dia_ajustado: pd.DataFrame) -> pd.DataFrame:
