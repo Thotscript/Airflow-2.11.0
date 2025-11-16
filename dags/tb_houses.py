@@ -44,7 +44,7 @@ def main():
     # - DD/MM/YYYY  (quando o 1º número > 12)
     # - MM/DD/YYYY  (quando o 1º número <= 12)
     # - YYYY-MM-DD  (ISO)
-    # - DD-MM-YYYY / MM-DD-YYYY (NOVO: com hífen)
+    # - DD-MM-YYYY / MM-DD-YYYY (com hífen)
     sql_create_tb_houses = """
         CREATE TABLE tb_houses AS
         SELECT 
@@ -646,12 +646,52 @@ def main():
                 ON A.id = I.id_unit
             LEFT JOIN tb_depara_canais AS J
                 ON B.type_name = J.Status
-            LEFT JOIN tb_calendario AS K
+            LEFT JOIN (
+                SELECT
+                    *,
+                    CASE
+                        WHEN `data` REGEXP '^[0-9]{2}/[0-9]{2}/[0-9]{4}$' THEN
+                            CASE
+                                WHEN CAST(SUBSTRING_INDEX(`data`, '/', 1) AS UNSIGNED) > 12
+                                THEN STR_TO_DATE(`data`, '%d/%m/%Y')
+                                ELSE STR_TO_DATE(`data`, '%m/%d/%Y')
+                            END
+                        WHEN `data` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN `data`
+                        WHEN `data` REGEXP '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' THEN
+                            CASE
+                                WHEN CAST(SUBSTRING_INDEX(`data`, '-', 1) AS UNSIGNED) > 12
+                                THEN STR_TO_DATE(`data`, '%d-%m-%Y')
+                                ELSE STR_TO_DATE(`data`, '%m-%d-%Y')
+                            END
+                        ELSE NULL
+                    END AS data_norm
+                FROM tb_calendario
+            ) AS K
                 ON DATE_FORMAT(B.creation_date_norm, '%Y%m%d') =
-                   DATE_FORMAT(K.data, '%Y%m%d')
-            LEFT JOIN tb_calendario AS L
+                   DATE_FORMAT(K.data_norm, '%Y%m%d')
+            LEFT JOIN (
+                SELECT
+                    *,
+                    CASE
+                        WHEN `data` REGEXP '^[0-9]{2}/[0-9]{2}/[0-9]{4}$' THEN
+                            CASE
+                                WHEN CAST(SUBSTRING_INDEX(`data`, '/', 1) AS UNSIGNED) > 12
+                                THEN STR_TO_DATE(`data`, '%d/%m/%Y')
+                                ELSE STR_TO_DATE(`data`, '%m/%d/%Y')
+                            END
+                        WHEN `data` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN `data`
+                        WHEN `data` REGEXP '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' THEN
+                            CASE
+                                WHEN CAST(SUBSTRING_INDEX(`data`, '-', 1) AS UNSIGNED) > 12
+                                THEN STR_TO_DATE(`data`, '%d-%m-%Y')
+                                ELSE STR_TO_DATE(`data`, '%m-%d-%Y')
+                            END
+                        ELSE NULL
+                    END AS data_norm
+                FROM tb_calendario
+            ) AS L
                 ON DATE_FORMAT(A.date_norm, '%Y%m%d') =
-                   DATE_FORMAT(L.data, '%Y%m%d')
+                   DATE_FORMAT(L.data_norm, '%Y%m%d')
         ),
         primeira_venda AS (
             SELECT
