@@ -44,6 +44,7 @@ def main():
     # - DD/MM/YYYY  (quando o 1º número > 12)
     # - MM/DD/YYYY  (quando o 1º número <= 12)
     # - YYYY-MM-DD  (ISO)
+    # - DD-MM-YYYY / MM-DD-YYYY (NOVO: com hífen)
     sql_create_tb_houses = """
         CREATE TABLE tb_houses AS
         SELECT 
@@ -105,6 +106,12 @@ def main():
                             ELSE STR_TO_DATE(`date`, '%m/%d/%Y')
                         END
                     WHEN `date` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN `date`
+                    WHEN `date` REGEXP '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' THEN
+                        CASE
+                            WHEN CAST(SUBSTRING_INDEX(`date`, '-', 1) AS UNSIGNED) > 12
+                            THEN STR_TO_DATE(`date`, '%d-%m-%Y')
+                            ELSE STR_TO_DATE(`date`, '%m-%d-%Y')
+                        END
                     ELSE NULL
                 END AS date_norm
             FROM tb_unit_dates
@@ -145,6 +152,12 @@ def main():
                             ELSE STR_TO_DATE(`Date`, '%m/%d/%Y')
                         END
                     WHEN `Date` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN `Date`
+                    WHEN `Date` REGEXP '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' THEN
+                        CASE
+                            WHEN CAST(SUBSTRING_INDEX(`Date`, '-', 1) AS UNSIGNED) > 12
+                            THEN STR_TO_DATE(`Date`, '%d-%m-%Y')
+                            ELSE STR_TO_DATE(`Date`, '%m-%d-%Y')
+                        END
                     ELSE NULL
                 END AS date_norm,
                 CASE
@@ -155,6 +168,12 @@ def main():
                             ELSE STR_TO_DATE(creation_date, '%m/%d/%Y')
                         END
                     WHEN creation_date REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN creation_date
+                    WHEN creation_date REGEXP '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' THEN
+                        CASE
+                            WHEN CAST(SUBSTRING_INDEX(creation_date, '-', 1) AS UNSIGNED) > 12
+                            THEN STR_TO_DATE(creation_date, '%d-%m-%Y')
+                            ELSE STR_TO_DATE(creation_date, '%m-%d-%Y')
+                        END
                     ELSE NULL
                 END AS creation_date_norm,
                 CASE
@@ -165,6 +184,12 @@ def main():
                             ELSE STR_TO_DATE(startdate, '%m/%d/%Y')
                         END
                     WHEN startdate REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN startdate
+                    WHEN startdate REGEXP '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' THEN
+                        CASE
+                            WHEN CAST(SUBSTRING_INDEX(startdate, '-', 1) AS UNSIGNED) > 12
+                            THEN STR_TO_DATE(startdate, '%d-%m-%Y')
+                            ELSE STR_TO_DATE(startdate, '%m-%d-%Y')
+                        END
                     ELSE NULL
                 END AS startdate_norm,
                 CASE
@@ -175,6 +200,12 @@ def main():
                             ELSE STR_TO_DATE(enddate, '%m/%d/%Y')
                         END
                     WHEN enddate REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN enddate
+                    WHEN enddate REGEXP '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' THEN
+                        CASE
+                            WHEN CAST(SUBSTRING_INDEX(enddate, '-', 1) AS UNSIGNED) > 12
+                            THEN STR_TO_DATE(enddate, '%d-%m-%Y')
+                            ELSE STR_TO_DATE(enddate, '%m-%d-%Y')
+                        END
                     ELSE NULL
                 END AS enddate_norm,
                 CASE
@@ -185,6 +216,12 @@ def main():
                             ELSE STR_TO_DATE(last_updated, '%m/%d/%Y')
                         END
                     WHEN last_updated REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN last_updated
+                    WHEN last_updated REGEXP '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' THEN
+                        CASE
+                            WHEN CAST(SUBSTRING_INDEX(last_updated, '-', 1) AS UNSIGNED) > 12
+                            THEN STR_TO_DATE(last_updated, '%d-%m-%Y')
+                            ELSE STR_TO_DATE(last_updated, '%m-%d-%Y')
+                        END
                     ELSE NULL
                 END AS last_updated_norm
             FROM tb_reservas_por_data
@@ -206,6 +243,12 @@ def main():
                             ELSE STR_TO_DATE(`date`, '%m/%d/%Y')
                         END
                     WHEN `date` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN `date`
+                    WHEN `date` REGEXP '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' THEN
+                        CASE
+                            WHEN CAST(SUBSTRING_INDEX(`date`, '-', 1) AS UNSIGNED) > 12
+                            THEN STR_TO_DATE(`date`, '%d-%m-%Y')
+                            ELSE STR_TO_DATE(`date`, '%m-%d-%Y')
+                        END
                     ELSE NULL
                 END AS date_norm
             FROM tb_metas
@@ -228,6 +271,12 @@ def main():
                             ELSE STR_TO_DATE(`Data`, '%m/%d/%Y')
                         END
                     WHEN `Data` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN `Data`
+                    WHEN `Data` REGEXP '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' THEN
+                        CASE
+                            WHEN CAST(SUBSTRING_INDEX(`Data`, '-', 1) AS UNSIGNED) > 12
+                            THEN STR_TO_DATE(`Data`, '%d-%m-%Y')
+                            ELSE STR_TO_DATE(`Data`, '%m-%d-%Y')
+                        END
                     ELSE NULL
                 END AS data_norm
             FROM tb_ocupacao_meta
@@ -248,6 +297,12 @@ def main():
                             ELSE STR_TO_DATE(`date`, '%m/%d/%Y')
                         END
                     WHEN `date` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN `date`
+                    WHEN `date` REGEXP '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' THEN
+                        CASE
+                            WHEN CAST(SUBSTRING_INDEX(`date`, '-', 1) AS UNSIGNED) > 12
+                            THEN STR_TO_DATE(`date`, '%d-%m-%Y')
+                            ELSE STR_TO_DATE(`date`, '%m-%d-%Y')
+                        END
                     ELSE NULL
                 END AS date_norm
             FROM tb_price
@@ -378,6 +433,12 @@ def main():
                                 ELSE STR_TO_DATE(`date`, '%m/%d/%Y')
                             END
                         WHEN `date` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN `date`
+                        WHEN `date` REGEXP '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' THEN
+                            CASE
+                                WHEN CAST(SUBSTRING_INDEX(`date`, '-', 1) AS UNSIGNED) > 12
+                                THEN STR_TO_DATE(`date`, '%d-%m-%Y')
+                                ELSE STR_TO_DATE(`date`, '%m-%d-%Y')
+                            END
                         ELSE NULL
                     END AS date_norm
                 FROM tb_unit_dates
@@ -418,6 +479,12 @@ def main():
                                 ELSE STR_TO_DATE(`Date`, '%m/%d/%Y')
                             END
                         WHEN `Date` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN `Date`
+                        WHEN `Date` REGEXP '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' THEN
+                            CASE
+                                WHEN CAST(SUBSTRING_INDEX(`Date`, '-', 1) AS UNSIGNED) > 12
+                                THEN STR_TO_DATE(`Date`, '%d-%m-%Y')
+                                ELSE STR_TO_DATE(`Date`, '%m-%d-%Y')
+                            END
                         ELSE NULL
                     END AS date_norm,
                     CASE
@@ -428,6 +495,12 @@ def main():
                                 ELSE STR_TO_DATE(creation_date, '%m/%d/%Y')
                             END
                         WHEN creation_date REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN creation_date
+                        WHEN creation_date REGEXP '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' THEN
+                            CASE
+                                WHEN CAST(SUBSTRING_INDEX(creation_date, '-', 1) AS UNSIGNED) > 12
+                                THEN STR_TO_DATE(creation_date, '%d-%m-%Y')
+                                ELSE STR_TO_DATE(creation_date, '%m-%d-%Y')
+                            END
                         ELSE NULL
                     END AS creation_date_norm,
                     CASE
@@ -438,6 +511,12 @@ def main():
                                 ELSE STR_TO_DATE(startdate, '%m/%d/%Y')
                             END
                         WHEN startdate REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN startdate
+                        WHEN startdate REGEXP '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' THEN
+                            CASE
+                                WHEN CAST(SUBSTRING_INDEX(startdate, '-', 1) AS UNSIGNED) > 12
+                                THEN STR_TO_DATE(startdate, '%d-%m-%Y')
+                                ELSE STR_TO_DATE(startdate, '%m-%d-%Y')
+                            END
                         ELSE NULL
                     END AS startdate_norm,
                     CASE
@@ -448,6 +527,12 @@ def main():
                                 ELSE STR_TO_DATE(enddate, '%m/%d/%Y')
                             END
                         WHEN enddate REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN enddate
+                        WHEN enddate REGEXP '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' THEN
+                            CASE
+                                WHEN CAST(SUBSTRING_INDEX(enddate, '-', 1) AS UNSIGNED) > 12
+                                THEN STR_TO_DATE(enddate, '%d-%m-%Y')
+                                ELSE STR_TO_DATE(enddate, '%m-%d-%Y')
+                            END
                         ELSE NULL
                     END AS enddate_norm,
                     CASE
@@ -458,6 +543,12 @@ def main():
                                 ELSE STR_TO_DATE(last_updated, '%m/%d/%Y')
                             END
                         WHEN last_updated REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN last_updated
+                        WHEN last_updated REGEXP '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' THEN
+                            CASE
+                                WHEN CAST(SUBSTRING_INDEX(last_updated, '-', 1) AS UNSIGNED) > 12
+                                THEN STR_TO_DATE(last_updated, '%d-%m-%Y')
+                                ELSE STR_TO_DATE(last_updated, '%m-%d-%Y')
+                            END
                         ELSE NULL
                     END AS last_updated_norm
                 FROM tb_reservas_por_data
@@ -479,6 +570,12 @@ def main():
                                 ELSE STR_TO_DATE(`date`, '%m/%d/%Y')
                             END
                         WHEN `date` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN `date`
+                        WHEN `date` REGEXP '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' THEN
+                            CASE
+                                WHEN CAST(SUBSTRING_INDEX(`date`, '-', 1) AS UNSIGNED) > 12
+                                THEN STR_TO_DATE(`date`, '%d-%m-%Y')
+                                ELSE STR_TO_DATE(`date`, '%m-%d-%Y')
+                            END
                         ELSE NULL
                     END AS date_norm
                 FROM tb_metas
@@ -505,6 +602,12 @@ def main():
                                 ELSE STR_TO_DATE(`Data`, '%m/%d/%Y')
                             END
                         WHEN `Data` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN `Data`
+                        WHEN `Data` REGEXP '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' THEN
+                            CASE
+                                WHEN CAST(SUBSTRING_INDEX(`Data`, '-', 1) AS UNSIGNED) > 12
+                                THEN STR_TO_DATE(`Data`, '%d-%m-%Y')
+                                ELSE STR_TO_DATE(`Data`, '%m-%d-%Y')
+                            END
                         ELSE NULL
                     END AS data_norm
                 FROM tb_ocupacao_meta
@@ -525,6 +628,12 @@ def main():
                                 ELSE STR_TO_DATE(`date`, '%m/%d/%Y')
                             END
                         WHEN `date` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN `date`
+                        WHEN `date` REGEXP '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' THEN
+                            CASE
+                                WHEN CAST(SUBSTRING_INDEX(`date`, '-', 1) AS UNSIGNED) > 12
+                                THEN STR_TO_DATE(`date`, '%d-%m-%Y')
+                                ELSE STR_TO_DATE(`date`, '%m-%d-%Y')
+                            END
                         ELSE NULL
                     END AS date_norm
                 FROM tb_price
