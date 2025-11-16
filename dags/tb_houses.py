@@ -39,6 +39,7 @@ def main():
         DROP TABLE IF EXISTS tb_houses;
     """
 
+    # Normalização de datas em subqueries A, B, C, F, G
     sql_create_tb_houses = """
         CREATE TABLE tb_houses AS
         SELECT 
@@ -99,7 +100,8 @@ def main():
                             THEN STR_TO_DATE(`date`, '%d/%m/%Y')
                             ELSE STR_TO_DATE(`date`, '%m/%d/%Y')
                         END
-                    WHEN `date` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN `date`
+                    WHEN `date` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN
+                        STR_TO_DATE(`date`, '%Y-%m-%d')
                     WHEN `date` REGEXP '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' THEN
                         CASE
                             WHEN CAST(SUBSTRING_INDEX(`date`, '-', 1) AS UNSIGNED) > 12
@@ -145,7 +147,8 @@ def main():
                             THEN STR_TO_DATE(`Date`, '%d/%m/%Y')
                             ELSE STR_TO_DATE(`Date`, '%m/%d/%Y')
                         END
-                    WHEN `Date` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN `Date`
+                    WHEN `Date` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN
+                        STR_TO_DATE(`Date`, '%Y-%m-%d')
                     WHEN `Date` REGEXP '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' THEN
                         CASE
                             WHEN CAST(SUBSTRING_INDEX(`Date`, '-', 1) AS UNSIGNED) > 12
@@ -161,7 +164,8 @@ def main():
                             THEN STR_TO_DATE(creation_date, '%d/%m/%Y')
                             ELSE STR_TO_DATE(creation_date, '%m/%d/%Y')
                         END
-                    WHEN creation_date REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN creation_date
+                    WHEN creation_date REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN
+                        STR_TO_DATE(creation_date, '%Y-%m-%d')
                     WHEN creation_date REGEXP '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' THEN
                         CASE
                             WHEN CAST(SUBSTRING_INDEX(creation_date, '-', 1) AS UNSIGNED) > 12
@@ -177,7 +181,8 @@ def main():
                             THEN STR_TO_DATE(startdate, '%d/%m/%Y')
                             ELSE STR_TO_DATE(startdate, '%m/%d/%Y')
                         END
-                    WHEN startdate REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN startdate
+                    WHEN startdate REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN
+                        STR_TO_DATE(startdate, '%Y-%m-%d')
                     WHEN startdate REGEXP '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' THEN
                         CASE
                             WHEN CAST(SUBSTRING_INDEX(startdate, '-', 1) AS UNSIGNED) > 12
@@ -193,7 +198,8 @@ def main():
                             THEN STR_TO_DATE(enddate, '%d/%m/%Y')
                             ELSE STR_TO_DATE(enddate, '%m/%d/%Y')
                         END
-                    WHEN enddate REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN enddate
+                    WHEN enddate REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN
+                        STR_TO_DATE(enddate, '%Y-%m-%d')
                     WHEN enddate REGEXP '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' THEN
                         CASE
                             WHEN CAST(SUBSTRING_INDEX(enddate, '-', 1) AS UNSIGNED) > 12
@@ -209,7 +215,8 @@ def main():
                             THEN STR_TO_DATE(last_updated, '%d/%m/%Y')
                             ELSE STR_TO_DATE(last_updated, '%m/%d/%Y')
                         END
-                    WHEN last_updated REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN last_updated
+                    WHEN last_updated REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN
+                        STR_TO_DATE(last_updated, '%Y-%m-%d')
                     WHEN last_updated REGEXP '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' THEN
                         CASE
                             WHEN CAST(SUBSTRING_INDEX(last_updated, '-', 1) AS UNSIGNED) > 12
@@ -220,8 +227,11 @@ def main():
                 END AS last_updated_norm
             FROM tb_reservas_por_data
         ) AS B
-            ON CONCAT(A.id, A.Administradora, DATE_FORMAT(A.date_norm, '%Y%m%d')) =
-               CONCAT(B.unit_id, B.Administradora_x, DATE_FORMAT(B.date_norm, '%Y%m%d'))
+            ON A.id = B.unit_id
+           AND A.Administradora = B.Administradora_x
+           AND A.date_norm IS NOT NULL
+           AND B.date_norm IS NOT NULL
+           AND DATE_FORMAT(A.date_norm, '%Y%m%d') = DATE_FORMAT(B.date_norm, '%Y%m%d')
         LEFT JOIN (
             SELECT
                 id_unit,
@@ -236,7 +246,8 @@ def main():
                             THEN STR_TO_DATE(`date`, '%d/%m/%Y')
                             ELSE STR_TO_DATE(`date`, '%m/%d/%Y')
                         END
-                    WHEN `date` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN `date`
+                    WHEN `date` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN
+                        STR_TO_DATE(`date`, '%Y-%m-%d')
                     WHEN `date` REGEXP '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' THEN
                         CASE
                             WHEN CAST(SUBSTRING_INDEX(`date`, '-', 1) AS UNSIGNED) > 12
@@ -247,10 +258,14 @@ def main():
                 END AS date_norm
             FROM tb_metas
         ) AS C
-            ON CONCAT(A.id, A.Administradora, DATE_FORMAT(A.date_norm, '%Y%m%d')) =
-               CONCAT(C.id_unit, C.Administradora, DATE_FORMAT(C.date_norm, '%Y%m%d'))
+            ON A.id = C.id_unit
+           AND A.Administradora = C.Administradora
+           AND A.date_norm IS NOT NULL
+           AND C.date_norm IS NOT NULL
+           AND DATE_FORMAT(A.date_norm, '%Y%m%d') = DATE_FORMAT(C.date_norm, '%Y%m%d')
         LEFT JOIN tb_property_list_wordpress AS D
-            ON CONCAT(A.id, A.Administradora) = CONCAT(D.id, D.Administradora)
+            ON A.id = D.id
+           AND A.Administradora = D.Administradora
         LEFT JOIN (
             SELECT
                 `Data`,
@@ -264,7 +279,8 @@ def main():
                             THEN STR_TO_DATE(`Data`, '%d/%m/%Y')
                             ELSE STR_TO_DATE(`Data`, '%m/%d/%Y')
                         END
-                    WHEN `Data` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN `Data`
+                    WHEN `Data` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN
+                        STR_TO_DATE(`Data`, '%Y-%m-%d')
                     WHEN `Data` REGEXP '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' THEN
                         CASE
                             WHEN CAST(SUBSTRING_INDEX(`Data`, '-', 1) AS UNSIGNED) > 12
@@ -275,8 +291,10 @@ def main():
                 END AS data_norm
             FROM tb_ocupacao_meta
         ) AS F
-            ON CONCAT(DATE_FORMAT(F.data_norm, '%Y%m%d'), F.Administradora) =
-               CONCAT(DATE_FORMAT(A.date_norm, '%Y%m%d'), A.Administradora)
+            ON A.Administradora = F.Administradora
+           AND A.date_norm IS NOT NULL
+           AND F.data_norm IS NOT NULL
+           AND DATE_FORMAT(A.date_norm, '%Y%m%d') = DATE_FORMAT(F.data_norm, '%Y%m%d')
         LEFT JOIN (
             SELECT
                 id_unit,
@@ -290,7 +308,8 @@ def main():
                             THEN STR_TO_DATE(`date`, '%d/%m/%Y')
                             ELSE STR_TO_DATE(`date`, '%m/%d/%Y')
                         END
-                    WHEN `date` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN `date`
+                    WHEN `date` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN
+                        STR_TO_DATE(`date`, '%Y-%m-%d')
                     WHEN `date` REGEXP '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' THEN
                         CASE
                             WHEN CAST(SUBSTRING_INDEX(`date`, '-', 1) AS UNSIGNED) > 12
@@ -301,8 +320,11 @@ def main():
                 END AS date_norm
             FROM tb_price
         ) AS G
-            ON CONCAT(A.id, A.Administradora, DATE_FORMAT(A.date_norm, '%Y%m%d')) =
-               CONCAT(G.id_unit, G.Administradora, DATE_FORMAT(G.date_norm, '%Y%m%d'));
+            ON A.id = G.id_unit
+           AND A.Administradora = G.Administradora
+           AND A.date_norm IS NOT NULL
+           AND G.date_norm IS NOT NULL
+           AND DATE_FORMAT(A.date_norm, '%Y%m%d') = DATE_FORMAT(G.date_norm, '%Y%m%d');
     """
 
     # ---------------------------------------------------------
@@ -404,23 +426,15 @@ def main():
                 END AS Days_Number_Faixa,
                 K.AnoMes,
                 K.Dia_Ajustado,
-                CASE
-                    WHEN K.data_norm IS NOT NULL
-                    THEN DATE_FORMAT(K.data_norm, '%m. %b')
-                    ELSE NULL
-                END AS Mes_Classificado,
+                DATE_FORMAT(K.Dia_Ajustado, '%m. %b') AS Mes_Classificado,
                 K.YTD,
                 K.MTD,
                 K.L7D,
                 K.SEMANA,
                 K.`Ano Comparação` AS Ano_Comparacao,
                 L.`Ano Comparação` AS Ano_Comparacao_Check_In,
-                CASE
-                    WHEN A.date_norm IS NOT NULL
-                    THEN DATE_FORMAT(A.date_norm, '%m. %b')
-                    ELSE NULL
-                END AS Mes_Classificado_Check_In,
-                L.data_norm AS Dia_Ajustado_Check_in,
+                DATE_FORMAT(A.date_norm, '%m. %b') AS Mes_Classificado_Check_In,
+                L.Dia_Ajustado AS Dia_Ajustado_Check_in,
                 NOW() AS atualizacao_
             FROM (
                 SELECT
@@ -433,7 +447,8 @@ def main():
                                 THEN STR_TO_DATE(`date`, '%d/%m/%Y')
                                 ELSE STR_TO_DATE(`date`, '%m/%d/%Y')
                             END
-                        WHEN `date` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN `date`
+                        WHEN `date` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN
+                            STR_TO_DATE(`date`, '%Y-%m-%d')
                         WHEN `date` REGEXP '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' THEN
                             CASE
                                 WHEN CAST(SUBSTRING_INDEX(`date`, '-', 1) AS UNSIGNED) > 12
@@ -479,7 +494,8 @@ def main():
                                 THEN STR_TO_DATE(`Date`, '%d/%m/%Y')
                                 ELSE STR_TO_DATE(`Date`, '%m/%d/%Y')
                             END
-                        WHEN `Date` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN `Date`
+                        WHEN `Date` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN
+                            STR_TO_DATE(`Date`, '%Y-%m-%d')
                         WHEN `Date` REGEXP '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' THEN
                             CASE
                                 WHEN CAST(SUBSTRING_INDEX(`Date`, '-', 1) AS UNSIGNED) > 12
@@ -495,7 +511,8 @@ def main():
                                 THEN STR_TO_DATE(creation_date, '%d/%m/%Y')
                                 ELSE STR_TO_DATE(creation_date, '%m/%d/%Y')
                             END
-                        WHEN creation_date REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN creation_date
+                        WHEN creation_date REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN
+                            STR_TO_DATE(creation_date, '%Y-%m-%d')
                         WHEN creation_date REGEXP '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' THEN
                             CASE
                                 WHEN CAST(SUBSTRING_INDEX(creation_date, '-', 1) AS UNSIGNED) > 12
@@ -511,7 +528,8 @@ def main():
                                 THEN STR_TO_DATE(startdate, '%d/%m/%Y')
                                 ELSE STR_TO_DATE(startdate, '%m/%d/%Y')
                             END
-                        WHEN startdate REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN startdate
+                        WHEN startdate REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN
+                            STR_TO_DATE(startdate, '%Y-%m-%d')
                         WHEN startdate REGEXP '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' THEN
                             CASE
                                 WHEN CAST(SUBSTRING_INDEX(startdate, '-', 1) AS UNSIGNED) > 12
@@ -527,7 +545,8 @@ def main():
                                 THEN STR_TO_DATE(enddate, '%d/%m/%Y')
                                 ELSE STR_TO_DATE(enddate, '%m/%d/%Y')
                             END
-                        WHEN enddate REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN enddate
+                        WHEN enddate REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN
+                            STR_TO_DATE(enddate, '%Y-%m-%d')
                         WHEN enddate REGEXP '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' THEN
                             CASE
                                 WHEN CAST(SUBSTRING_INDEX(enddate, '-', 1) AS UNSIGNED) > 12
@@ -543,7 +562,8 @@ def main():
                                 THEN STR_TO_DATE(last_updated, '%d/%m/%Y')
                                 ELSE STR_TO_DATE(last_updated, '%m/%d/%Y')
                             END
-                        WHEN last_updated REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN last_updated
+                        WHEN last_updated REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN
+                            STR_TO_DATE(last_updated, '%Y-%m-%d')
                         WHEN last_updated REGEXP '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' THEN
                             CASE
                                 WHEN CAST(SUBSTRING_INDEX(last_updated, '-', 1) AS UNSIGNED) > 12
@@ -554,8 +574,11 @@ def main():
                     END AS last_updated_norm
                 FROM tb_reservas_por_data
             ) AS B
-                ON CONCAT(A.id, A.Administradora, DATE_FORMAT(A.date_norm, '%Y%m%d')) =
-                   CONCAT(B.unit_id, B.Administradora_x, DATE_FORMAT(B.date_norm, '%Y%m%d'))
+                ON A.id = B.unit_id
+               AND A.Administradora = B.Administradora_x
+               AND A.date_norm IS NOT NULL
+               AND B.date_norm IS NOT NULL
+               AND DATE_FORMAT(A.date_norm, '%Y%m%d') = DATE_FORMAT(B.date_norm, '%Y%m%d')
             LEFT JOIN (
                 SELECT
                     id_unit,
@@ -570,7 +593,8 @@ def main():
                                 THEN STR_TO_DATE(`date`, '%d/%m/%Y')
                                 ELSE STR_TO_DATE(`date`, '%m/%d/%Y')
                             END
-                        WHEN `date` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN `date`
+                        WHEN `date` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN
+                            STR_TO_DATE(`date`, '%Y-%m-%d')
                         WHEN `date` REGEXP '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' THEN
                             CASE
                                 WHEN CAST(SUBSTRING_INDEX(`date`, '-', 1) AS UNSIGNED) > 12
@@ -581,10 +605,14 @@ def main():
                     END AS date_norm
                 FROM tb_metas
             ) AS C
-                ON CONCAT(A.id, A.Administradora, DATE_FORMAT(A.date_norm, '%Y%m%d')) =
-                   CONCAT(C.id_unit, C.Administradora, DATE_FORMAT(C.date_norm, '%Y%m%d'))
+                ON A.id = C.id_unit
+               AND A.Administradora = C.Administradora
+               AND A.date_norm IS NOT NULL
+               AND C.date_norm IS NOT NULL
+               AND DATE_FORMAT(A.date_norm, '%Y%m%d') = DATE_FORMAT(C.date_norm, '%Y%m%d')
             LEFT JOIN tb_depara_casas AS D
-                ON CONCAT(A.id, A.Administradora) = CONCAT(D.id, D.Administradora)
+                ON A.id = D.id
+               AND A.Administradora = D.Administradora
             LEFT JOIN (
                 SELECT
                     `Data`,
@@ -602,7 +630,8 @@ def main():
                                 THEN STR_TO_DATE(`Data`, '%d/%m/%Y')
                                 ELSE STR_TO_DATE(`Data`, '%m/%d/%Y')
                             END
-                        WHEN `Data` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN `Data`
+                        WHEN `Data` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN
+                            STR_TO_DATE(`Data`, '%Y-%m-%d')
                         WHEN `Data` REGEXP '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' THEN
                             CASE
                                 WHEN CAST(SUBSTRING_INDEX(`Data`, '-', 1) AS UNSIGNED) > 12
@@ -613,8 +642,10 @@ def main():
                     END AS data_norm
                 FROM tb_ocupacao_meta
             ) AS F
-                ON CONCAT(DATE_FORMAT(F.data_norm, '%Y%m%d'), F.Administradora) =
-                   CONCAT(DATE_FORMAT(A.date_norm, '%Y%m%d'), A.Administradora)
+                ON A.Administradora = F.Administradora
+               AND A.date_norm IS NOT NULL
+               AND F.data_norm IS NOT NULL
+               AND DATE_FORMAT(A.date_norm, '%Y%m%d') = DATE_FORMAT(F.data_norm, '%Y%m%d')
             LEFT JOIN (
                 SELECT
                     id_unit,
@@ -628,7 +659,8 @@ def main():
                                 THEN STR_TO_DATE(`date`, '%d/%m/%Y')
                                 ELSE STR_TO_DATE(`date`, '%m/%d/%Y')
                             END
-                        WHEN `date` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN `date`
+                        WHEN `date` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN
+                            STR_TO_DATE(`date`, '%Y-%m-%d')
                         WHEN `date` REGEXP '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' THEN
                             CASE
                                 WHEN CAST(SUBSTRING_INDEX(`date`, '-', 1) AS UNSIGNED) > 12
@@ -639,8 +671,11 @@ def main():
                     END AS date_norm
                 FROM tb_price
             ) AS G
-                ON CONCAT(A.id, A.Administradora, DATE_FORMAT(A.date_norm, '%Y%m%d')) =
-                   CONCAT(G.id_unit, G.Administradora, DATE_FORMAT(G.date_norm, '%Y%m%d'))
+                ON A.id = G.id_unit
+               AND A.Administradora = G.Administradora
+               AND A.date_norm IS NOT NULL
+               AND G.date_norm IS NOT NULL
+               AND DATE_FORMAT(A.date_norm, '%Y%m%d') = DATE_FORMAT(G.date_norm, '%Y%m%d')
             LEFT JOIN tb_status_vendas AS H
                 ON B.type_name = H.type_name
             LEFT JOIN tb_filtro_metas AS I
@@ -649,7 +684,13 @@ def main():
                 ON B.type_name = J.Status
             LEFT JOIN (
                 SELECT
-                    *,
+                    AnoMes,
+                    Dia_Ajustado,
+                    YTD,
+                    MTD,
+                    L7D,
+                    SEMANA,
+                    `Ano Comparação`,
                     CASE
                         WHEN `data` REGEXP '^[0-9]{2}/[0-9]{2}/[0-9]{4}$' THEN
                             CASE
@@ -657,7 +698,8 @@ def main():
                                 THEN STR_TO_DATE(`data`, '%d/%m/%Y')
                                 ELSE STR_TO_DATE(`data`, '%m/%d/%Y')
                             END
-                        WHEN `data` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN `data`
+                        WHEN `data` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN
+                            STR_TO_DATE(`data`, '%Y-%m-%d')
                         WHEN `data` REGEXP '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' THEN
                             CASE
                                 WHEN CAST(SUBSTRING_INDEX(`data`, '-', 1) AS UNSIGNED) > 12
@@ -668,11 +710,13 @@ def main():
                     END AS data_norm
                 FROM tb_calendario
             ) AS K
-                ON DATE_FORMAT(B.creation_date_norm, '%Y%m%d') =
-                   DATE_FORMAT(K.data_norm, '%Y%m%d')
+                ON B.creation_date_norm IS NOT NULL
+               AND K.data_norm IS NOT NULL
+               AND DATE_FORMAT(B.creation_date_norm, '%Y%m%d') = DATE_FORMAT(K.data_norm, '%Y%m%d')
             LEFT JOIN (
                 SELECT
-                    *,
+                    Dia_Ajustado,
+                    `Ano Comparação`,
                     CASE
                         WHEN `data` REGEXP '^[0-9]{2}/[0-9]{2}/[0-9]{4}$' THEN
                             CASE
@@ -680,7 +724,8 @@ def main():
                                 THEN STR_TO_DATE(`data`, '%d/%m/%Y')
                                 ELSE STR_TO_DATE(`data`, '%m/%d/%Y')
                             END
-                        WHEN `data` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN `data`
+                        WHEN `data` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN
+                            STR_TO_DATE(`data`, '%Y-%m-%d')
                         WHEN `data` REGEXP '^[0-9]{2}-[0-9]{2}-[0-9]{4}$' THEN
                             CASE
                                 WHEN CAST(SUBSTRING_INDEX(`data`, '-', 1) AS UNSIGNED) > 12
@@ -691,8 +736,9 @@ def main():
                     END AS data_norm
                 FROM tb_calendario
             ) AS L
-                ON DATE_FORMAT(A.date_norm, '%Y%m%d') =
-                   DATE_FORMAT(L.data_norm, '%Y%m%d')
+                ON A.date_norm IS NOT NULL
+               AND L.data_norm IS NOT NULL
+               AND DATE_FORMAT(A.date_norm, '%Y%m%d') = DATE_FORMAT(L.data_norm, '%Y%m%d')
         ),
         primeira_venda AS (
             SELECT
@@ -716,7 +762,8 @@ def main():
             NOW() AS atualizacao
         FROM tb_houses_parcial AS A
         LEFT JOIN primeira_venda AS B
-            ON CONCAT(A.unit_id, A.Administradora) = CONCAT(B.unit_id, B.Administradora)
+          ON A.unit_id = B.unit_id
+         AND A.Administradora = B.Administradora
         WHERE A.unit_id NOT IN (
             747169, 567515, 588400, 588406, 441403, 614452, 747735, 747169, 
             747171, 379240, 747215, 747220, 614526, 747747, 614527, 575254, 
