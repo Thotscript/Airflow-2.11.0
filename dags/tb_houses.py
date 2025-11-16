@@ -39,10 +39,6 @@ def main():
         DROP TABLE IF EXISTS tb_houses;
     """
 
-    # IMPORTANTE:
-    # - Assumindo colunas de data/datetime já no tipo DATE/DATETIME.
-    # - Se ainda estiverem como texto (ex: 'MM/dd/yyyy'), usar STR_TO_DATE():
-    #   DATE_FORMAT(STR_TO_DATE(a.date, '%m/%d/%Y'), '%Y%m%d')
     sql_create_tb_houses = """
         CREATE TABLE tb_houses AS
         SELECT 
@@ -116,7 +112,6 @@ def main():
         DROP TABLE IF EXISTS tb_houses_geral;
     """
 
-    # Aqui uso CTE (WITH), suportado em MySQL 8+.
     sql_create_tb_houses_geral = """
         CREATE TABLE tb_houses_geral AS
         WITH tb_houses_parcial AS (
@@ -278,28 +273,22 @@ def main():
         );
     """
 
-    # ---------------------------------------------------------
-    # EXECUÇÃO
-    # ---------------------------------------------------------
-    with engine.connect() as connection:
-        # tb_houses
-        connection.execute(text(sql_drop_tb_houses))
-        connection.commit()
+    try:
+        # Transação única para toda a recriação
+        with engine.begin() as connection:
+            # tb_houses
+            connection.execute(text(sql_drop_tb_houses))
+            connection.execute(text(sql_create_tb_houses))
+            print("tb_houses criada/atualizada com sucesso (MySQL).")
 
-        connection.execute(text(sql_create_tb_houses))
-        connection.commit()
-        print("tb_houses criada/atualizada com sucesso (MySQL).")
+            # tb_houses_geral
+            connection.execute(text(sql_drop_tb_houses_geral))
+            connection.execute(text(sql_create_tb_houses_geral))
+            print("tb_houses_geral criada/atualizada com sucesso (MySQL).")
 
-        # tb_houses_geral
-        connection.execute(text(sql_drop_tb_houses_geral))
-        connection.commit()
-
-        connection.execute(text(sql_create_tb_houses_geral))
-        connection.commit()
-        print("tb_houses_geral criada/atualizada com sucesso (MySQL).")
-
-    engine.dispose()
-    print("Conexão MySQL encerrada.")
+    finally:
+        engine.dispose()
+        print("Conexão MySQL encerrada.")
 
 
 # ---------------------------------------------------------
@@ -308,24 +297,19 @@ def main():
 SP_TZ = pendulum.timezone("America/Sao_Paulo")
 
 with DAG(
-    dag_id="OVH-tabelas_houses",   # ajuste o nome se quiser
+    dag_id="OVH-tabelas_houses",
     start_date=pendulum.datetime(2025, 9, 23, 8, 0, tz=SP_TZ),
-    schedule="30 6 * * *",         # ex.: todo dia às 06:30 (ajuste se preferir)
+    schedule="30 6 * * *",  # todo dia 06:30
     catchup=False,
     tags=["Tabelas - OVH", "tb_houses"],
 ):
 
     @task()
     def atualizar_tb_houses_e_geral():
-        """
-        Task que executa o fluxo principal para recriar
-        tb_houses e tb_houses_geral.
-        """
         main()
 
     atualizar_tb_houses_e_geral()
 
 
-# Se quiser manter a possibilidade de rodar standalone:
 if __name__ == "__main__":
     main()
