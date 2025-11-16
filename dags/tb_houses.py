@@ -39,12 +39,6 @@ def main():
         DROP TABLE IF EXISTS tb_houses;
     """
 
-    # Observação: toda normalização de datas é feita nas subqueries (A, B, C, F, G)
-    # usando um "parser seguro" que entende:
-    # - DD/MM/YYYY  (quando o 1º número > 12)
-    # - MM/DD/YYYY  (quando o 1º número <= 12)
-    # - YYYY-MM-DD  (ISO)
-    # - DD-MM-YYYY / MM-DD-YYYY (com hífen)
     sql_create_tb_houses = """
         CREATE TABLE tb_houses AS
         SELECT 
@@ -318,7 +312,6 @@ def main():
         DROP TABLE IF EXISTS tb_houses_geral;
     """
 
-    # tb_houses_geral também normaliza datas nas subqueries
     sql_create_tb_houses_geral = """
         CREATE TABLE tb_houses_geral AS
         WITH tb_houses_parcial AS (
@@ -411,15 +404,23 @@ def main():
                 END AS Days_Number_Faixa,
                 K.AnoMes,
                 K.Dia_Ajustado,
-                DATE_FORMAT(K.Dia_Ajustado, '%m. %b') AS Mes_Classificado,
+                CASE
+                    WHEN K.data_norm IS NOT NULL
+                    THEN DATE_FORMAT(K.data_norm, '%m. %b')
+                    ELSE NULL
+                END AS Mes_Classificado,
                 K.YTD,
                 K.MTD,
                 K.L7D,
                 K.SEMANA,
                 K.`Ano Comparação` AS Ano_Comparacao,
                 L.`Ano Comparação` AS Ano_Comparacao_Check_In,
-                DATE_FORMAT(A.date_norm, '%m. %b') AS Mes_Classificado_Check_In,
-                L.Dia_Ajustado AS Dia_Ajustado_Check_in,
+                CASE
+                    WHEN A.date_norm IS NOT NULL
+                    THEN DATE_FORMAT(A.date_norm, '%m. %b')
+                    ELSE NULL
+                END AS Mes_Classificado_Check_In,
+                L.data_norm AS Dia_Ajustado_Check_in,
                 NOW() AS atualizacao_
             FROM (
                 SELECT
@@ -701,7 +702,7 @@ def main():
                 MAX(Date_House) AS latest_date_house_with_reserva,
                 MIN(Date_House) AS earliest_date_house_with_reserva,
                 NOW() AS atualizacao
-            FROM tb_houses_parcial     -- ✅ CORREÇÃO: antes era tb_houses
+            FROM tb_houses_parcial
             WHERE id_reserva > 0
               AND creation_date IS NOT NULL
               AND Date_House IS NOT NULL
