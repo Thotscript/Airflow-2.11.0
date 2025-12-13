@@ -124,18 +124,36 @@ def main():
     engine = create_engine(
         f"mysql+pymysql://{DB_USER}:{quote_plus(DB_PASS)}@{DB_HOST}:{DB_PORT}/{DB_NAME}?charset=utf8mb4",
         pool_pre_ping=True,
+        # Opcional: Aumentar timeout da sessão se o banco estiver muito lento
+        connect_args={"init_command": "SET SESSION innodb_lock_wait_timeout=120"} 
     )
 
-    CHUNK_SIZE = 50000        # linhas por leitura
-    WRITE_SIZE = 5000         # linhas por escrita
-    RATE_LIMIT = 0.5          # segundos de pausa entre lotes
+    CHUNK_SIZE = 50000        # Leitura do banco (SELECT)
+    WRITE_SIZE = 1000         # REDUZIDO: Escrita no banco (INSERT) - evita travar a tabela
+    RATE_LIMIT = 0.5          
     total_linhas = 0
-    first_write = True
 
     try:
-        print("[main] Iniciando leitura incremental...")
+        print("[main] Iniciando processo...")
 
-        # Lê precos inteiros (geralmente menor)
+        # --- PASSO 1: Preparar a tabela de destino (Truncate/Drop) ---
+        # Fazemos isso ANTES de começar a ler os dados pesados para evitar locks cruzados.
+        # Se for a primeira execução do dia, queremos limpar a tabela.
+        # Como o Pandas 'replace' recria a tabela e define os tipos, podemos fazer um dummy write 
+        # ou usar execute direto se a tabela já existir e quisermos apenas limpar.
+        
+        # Estratégia Segura: Usar o Pandas para recriar a estrutura com 0 linhas primeiro
+        # ou apenas Truncar se a estrutura for fixa. 
+        # Vamos assumir que você quer recriar a estrutura baseada no DataFrame:
+        
+        # Vamos deixar o Pandas criar a tabela na primeira iteração, MAS com um lote pequeno
+        # ou tratar o 'replace' fora do loop principal se possível.
+        # No seu caso, como os dados vêm em chunks, a melhor abordagem segura é:
+        # Usar "replace" APENAS no primeiro chunk, mas com WRITE_SIZE menor.
+        
+        first_chunk = True 
+
+        # Lê tabela de preços (memória)
         precos = pd.read_sql("SELECT * FROM tb_reservas_price_day", engine)
 
         # Lê reservas em blocos
@@ -146,9 +164,8 @@ def main():
         )
 
         for i, reservas in enumerate(reservas_chunks):
-            print(f"[chunk {i}] Linhas de reservas recebidas: {len(reservas)}")
+            print(f"[chunk {i}] Lendo {len(reservas)} linhas...")
 
-            # Merge parcial
             merged = pd.merge(
                 reservas,
                 precos,
@@ -157,30 +174,38 @@ def main():
                 how="left",
             )
 
-            # Processamento e limpeza
             merged = process_chunk(merged)
             dtype = build_dtype_map(merged)
 
-            # Escrita em sublotes menores
+            # --- Loop de Escrita ---
+            # Aqui iteramos sobre o dataframe processado em pedaços menores
             for start in range(0, len(merged), WRITE_SIZE):
                 end = start + WRITE_SIZE
                 batch = merged.iloc[start:end]
+
+                # Lógica Crítica:
+                # Se for o PRIMEIRO lote do PRIMEIRO chunk => replace (cria a tabela)
+                # Qualquer outro lote => append
+                mode = "replace" if (first_chunk and start == 0) else "append"
 
                 with engine.begin() as conn:
                     batch.to_sql(
                         TABLE_OUT,
                         con=conn,
-                        if_exists="replace" if first_write else "append",
+                        if_exists=mode,
                         index=False,
-                        chunksize=WRITE_SIZE,
-                        method="multi",
+                        chunksize=WRITE_SIZE, # Garante que o pandas respeite o tamanho
+                        method="multi",       # Mantém performance, mas com lote menor
                         dtype=dtype,
                     )
+                
+                # Se rodou o primeiro lote com sucesso, nunca mais usamos replace
+                if mode == "replace":
+                    first_chunk = False 
 
                 total_linhas += len(batch)
-                first_write = False
-                print(f"[chunk {i}] Gravação parcial: {len(batch)} linhas (total={total_linhas})")
-
+                print(f"[chunk {i}] Gravado lote {start}-{end}. Total: {total_linhas}")
+                
                 time.sleep(RATE_LIMIT)
 
         print(f"✅ Processo concluído. Linhas totais gravadas: {total_linhas}")
