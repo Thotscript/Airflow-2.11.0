@@ -121,71 +121,65 @@ def process_chunk(chunk: pd.DataFrame) -> pd.DataFrame:
 # Função principal com CHUNKS + RATE LIMIT
 # =========================
 def main():
+    # Adicione connect_args para evitar timeouts em queries longas
     engine = create_engine(
         f"mysql+pymysql://{DB_USER}:{quote_plus(DB_PASS)}@{DB_HOST}:{DB_PORT}/{DB_NAME}?charset=utf8mb4",
         pool_pre_ping=True,
-        # Opcional: Aumentar timeout da sessão se o banco estiver muito lento
         connect_args={"init_command": "SET SESSION innodb_lock_wait_timeout=120"} 
     )
 
-    CHUNK_SIZE = 50000        # Leitura do banco (SELECT)
-    WRITE_SIZE = 1000         # REDUZIDO: Escrita no banco (INSERT) - evita travar a tabela
-    RATE_LIMIT = 0.5          
+    # Reduzi o CHUNK para leitura para garantir que não estoure memória
+    # Se funcionar bem, pode tentar subir para 50.000 depois
+    READ_CHUNK_SIZE = 20000 
+    WRITE_SIZE = 1000       
+    RATE_LIMIT = 0.5        
     total_linhas = 0
+    first_chunk = True
 
     try:
-        print("[main] Iniciando processo...")
+        print("[main] Iniciando leitura incremental COM JOIN no SQL...")
 
-        # --- PASSO 1: Preparar a tabela de destino (Truncate/Drop) ---
-        # Fazemos isso ANTES de começar a ler os dados pesados para evitar locks cruzados.
-        # Se for a primeira execução do dia, queremos limpar a tabela.
-        # Como o Pandas 'replace' recria a tabela e define os tipos, podemos fazer um dummy write 
-        # ou usar execute direto se a tabela já existir e quisermos apenas limpar.
-        
-        # Estratégia Segura: Usar o Pandas para recriar a estrutura com 0 linhas primeiro
-        # ou apenas Truncar se a estrutura for fixa. 
-        # Vamos assumir que você quer recriar a estrutura baseada no DataFrame:
-        
-        # Vamos deixar o Pandas criar a tabela na primeira iteração, MAS com um lote pequeno
-        # ou tratar o 'replace' fora do loop principal se possível.
-        # No seu caso, como os dados vêm em chunks, a melhor abordagem segura é:
-        # Usar "replace" APENAS no primeiro chunk, mas com WRITE_SIZE menor.
-        
-        first_chunk = True 
+        # --- A GRANDE MUDANÇA ---
+        # Em vez de ler tb_reservas e tb_reservas_price_day separados,
+        # lemos tudo junto. Isso evita carregar a tabela de preços inteira na RAM.
+        # Ajuste os campos (*) conforme necessário para evitar colunas duplicadas.
+        sql_query = """
+            SELECT 
+                r.*, 
+                p.* -- Cuidado: colunas com mesmo nome (ex: id) terão sufixos no pandas ou sobrescrita
+            FROM tb_reservas r
+            LEFT JOIN tb_reservas_price_day p ON r.id = p.reservation_id
+            WHERE r.status_id IN (4,5,6,7)
+        """
 
-        # Lê tabela de preços (memória)
-        precos = pd.read_sql("SELECT * FROM tb_reservas_price_day", engine)
-
-        # Lê reservas em blocos
+        # O Pandas gerencia o cursor do lado do servidor para trazer em chunks
         reservas_chunks = pd.read_sql(
-            "SELECT * FROM tb_reservas WHERE status_id IN (4,5,6,7)",
+            sql_query,
             con=engine,
-            chunksize=CHUNK_SIZE,
+            chunksize=READ_CHUNK_SIZE,
         )
 
-        for i, reservas in enumerate(reservas_chunks):
-            print(f"[chunk {i}] Lendo {len(reservas)} linhas...")
+        for i, chunk in enumerate(reservas_chunks):
+            print(f"[chunk {i}] Linhas recebidas (já com preços): {len(chunk)}")
 
-            merged = pd.merge(
-                reservas,
-                precos,
-                left_on="id",
-                right_on="reservation_id",
-                how="left",
-            )
+            # --- REMOVIDO: pd.merge ---
+            # O merge já foi feito pelo MySQL.
+            # O dataframe 'chunk' já contém os dados de reserva E preços.
 
-            merged = process_chunk(merged)
-            dtype = build_dtype_map(merged)
+            # Tratamento de colunas duplicadas pelo JOIN (ex: id do preço vs id da reserva)
+            # O Pandas costuma renomear para 'id' e 'id.1'.
+            # Aqui limpamos colunas duplicadas se necessário:
+            chunk = chunk.loc[:, ~chunk.columns.duplicated()]
 
-            # --- Loop de Escrita ---
-            # Aqui iteramos sobre o dataframe processado em pedaços menores
-            for start in range(0, len(merged), WRITE_SIZE):
+            # Processamento
+            chunk = process_chunk(chunk)
+            dtype = build_dtype_map(chunk)
+
+            # Loop de Escrita (Mantido a lógica segura de 1000 linhas)
+            for start in range(0, len(chunk), WRITE_SIZE):
                 end = start + WRITE_SIZE
-                batch = merged.iloc[start:end]
+                batch = chunk.iloc[start:end]
 
-                # Lógica Crítica:
-                # Se for o PRIMEIRO lote do PRIMEIRO chunk => replace (cria a tabela)
-                # Qualquer outro lote => append
                 mode = "replace" if (first_chunk and start == 0) else "append"
 
                 with engine.begin() as conn:
@@ -194,25 +188,31 @@ def main():
                         con=conn,
                         if_exists=mode,
                         index=False,
-                        chunksize=WRITE_SIZE, # Garante que o pandas respeite o tamanho
-                        method="multi",       # Mantém performance, mas com lote menor
+                        chunksize=WRITE_SIZE,
+                        method="multi",
                         dtype=dtype,
                     )
                 
-                # Se rodou o primeiro lote com sucesso, nunca mais usamos replace
                 if mode == "replace":
                     first_chunk = False 
 
                 total_linhas += len(batch)
-                print(f"[chunk {i}] Gravado lote {start}-{end}. Total: {total_linhas}")
+                
+                # Feedback visual menos frequente para não poluir log
+                if total_linhas % 5000 == 0:
+                    print(f"[chunk {i}] Progresso: {total_linhas} linhas gravadas...")
                 
                 time.sleep(RATE_LIMIT)
 
         print(f"✅ Processo concluído. Linhas totais gravadas: {total_linhas}")
 
     except SQLAlchemyError as e:
-        print("❌ Erro ao gravar no MySQL via to_sql:")
+        print("❌ Erro SQLAlchemy:")
         print(e)
+        traceback.print_exc()
+        raise
+    except Exception as e:
+        print("❌ Erro Genérico:")
         traceback.print_exc()
         raise
     finally:
