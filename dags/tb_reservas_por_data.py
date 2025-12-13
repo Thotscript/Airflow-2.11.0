@@ -121,103 +121,104 @@ def process_chunk(chunk: pd.DataFrame) -> pd.DataFrame:
 # Função principal com CHUNKS + RATE LIMIT
 # =========================
 def main():
-    # Adicione connect_args para evitar timeouts em queries longas
     engine = create_engine(
         f"mysql+pymysql://{DB_USER}:{quote_plus(DB_PASS)}@{DB_HOST}:{DB_PORT}/{DB_NAME}?charset=utf8mb4",
         pool_pre_ping=True,
-        connect_args={"init_command": "SET SESSION innodb_lock_wait_timeout=120"} 
+        # Timeout menor aqui é seguro porque as queries serão rápidas
+        connect_args={"init_command": "SET SESSION innodb_lock_wait_timeout=60"} 
     )
 
-    # Reduzi o CHUNK para leitura para garantir que não estoure memória
-    # Se funcionar bem, pode tentar subir para 50.000 depois
-    READ_CHUNK_SIZE = 20000 
-    WRITE_SIZE = 1000       
-    RATE_LIMIT = 0.5        
-    total_linhas = 0
-    first_chunk = True
+    BATCH_SIZE = 1000   # Processamos 1000 reservas por vez (seguro para memória)
+    total_gravado = 0
+    first_run = True
 
     try:
-        print("[main] Iniciando leitura incremental COM JOIN no SQL...")
+        print("[main] Etapa 1: Buscando lista de IDs para processar...")
+        
+        # 1. Busca APENAS os IDs (Leve e Rápido)
+        # Isso carrega apenas uma lista de inteiros na memória
+        ids_query = "SELECT id FROM tb_reservas WHERE status_id IN (4,5,6,7)"
+        df_ids = pd.read_sql(ids_query, engine)
+        
+        all_ids = df_ids["id"].tolist()
+        total_ids = len(all_ids)
+        print(f"[main] Total de reservas a processar: {total_ids}")
 
-        # --- A GRANDE MUDANÇA ---
-        # Em vez de ler tb_reservas e tb_reservas_price_day separados,
-        # lemos tudo junto. Isso evita carregar a tabela de preços inteira na RAM.
-        # Ajuste os campos (*) conforme necessário para evitar colunas duplicadas.
-        sql_query = """
-            SELECT 
-                r.*, 
-                p.* -- Cuidado: colunas com mesmo nome (ex: id) terão sufixos no pandas ou sobrescrita
-            FROM tb_reservas r
-            LEFT JOIN tb_reservas_price_day p ON r.id = p.reservation_id
-            WHERE r.status_id IN (4,5,6,7)
-        """
+        if total_ids == 0:
+            print("Nenhuma reserva encontrada. Encerrando.")
+            return
 
-        # O Pandas gerencia o cursor do lado do servidor para trazer em chunks
-        reservas_chunks = pd.read_sql(
-            sql_query,
-            con=engine,
-            chunksize=READ_CHUNK_SIZE,
-        )
+        # 2. Itera sobre a lista de IDs em blocos (fatiamento de lista)
+        # range(start, stop, step)
+        for i in range(0, total_ids, BATCH_SIZE):
+            # Pega o lote atual de IDs (ex: 1000 IDs)
+            batch_ids = all_ids[i : i + BATCH_SIZE]
+            
+            # Transforma a lista [1, 2, 3] em string "1, 2, 3" para o SQL
+            # (Seguro aqui pois são inteiros vindos do próprio banco)
+            ids_string = ",".join(map(str, batch_ids))
 
-        for i, chunk in enumerate(reservas_chunks):
-            print(f"[chunk {i}] Linhas recebidas (já com preços): {len(chunk)}")
+            # 3. Query FOCADA apenas nesses IDs
+            # O MySQL resolve isso instantaneamente pois usa o Índice Primário
+            sql_query = f"""
+                SELECT 
+                    r.*, 
+                    p.* FROM tb_reservas r
+                LEFT JOIN tb_reservas_price_day p ON r.id = p.reservation_id
+                WHERE r.id IN ({ids_string})
+            """
 
-            # --- REMOVIDO: pd.merge ---
-            # O merge já foi feito pelo MySQL.
-            # O dataframe 'chunk' já contém os dados de reserva E preços.
+            # Lê os dados detalhados deste pequeno lote
+            df_batch = pd.read_sql(sql_query, engine)
+            
+            # Limpeza de colunas duplicadas pelo JOIN
+            df_batch = df_batch.loc[:, ~df_batch.columns.duplicated()]
 
-            # Tratamento de colunas duplicadas pelo JOIN (ex: id do preço vs id da reserva)
-            # O Pandas costuma renomear para 'id' e 'id.1'.
-            # Aqui limpamos colunas duplicadas se necessário:
-            chunk = chunk.loc[:, ~chunk.columns.duplicated()]
+            # Processamento de Negócio
+            df_batch = process_chunk(df_batch)
+            dtype = build_dtype_map(df_batch)
 
-            # Processamento
-            chunk = process_chunk(chunk)
-            dtype = build_dtype_map(chunk)
+            # Define modo de escrita
+            # Se for o primeiro lote de todos -> replace (limpa a tabela)
+            # Todos os subsequentes -> append
+            mode = "replace" if first_run else "append"
 
-            # Loop de Escrita (Mantido a lógica segura de 1000 linhas)
-            for start in range(0, len(chunk), WRITE_SIZE):
-                end = start + WRITE_SIZE
-                batch = chunk.iloc[start:end]
+            # Gravação
+            with engine.begin() as conn:
+                df_batch.to_sql(
+                    TABLE_OUT,
+                    con=conn,
+                    if_exists=mode,
+                    index=False,
+                    method="multi", 
+                    chunksize=BATCH_SIZE, # Escreve o lote inteiro de uma vez
+                    dtype=dtype,
+                )
 
-                mode = "replace" if (first_chunk and start == 0) else "append"
+            total_gravado += len(df_batch)
+            first_run = False
+            
+            # Log de progresso claro
+            percent = round((i + BATCH_SIZE) / total_ids * 100, 2)
+            if percent > 100: percent = 100
+            print(f"[Progresso] Lote {i // BATCH_SIZE + 1} processado. Total linhas gravadas: {total_gravado} ({percent}%)")
 
-                with engine.begin() as conn:
-                    batch.to_sql(
-                        TABLE_OUT,
-                        con=conn,
-                        if_exists=mode,
-                        index=False,
-                        chunksize=WRITE_SIZE,
-                        method="multi",
-                        dtype=dtype,
-                    )
-                
-                if mode == "replace":
-                    first_chunk = False 
+            # Pausa leve para não saturar CPU
+            time.sleep(0.2)
 
-                total_linhas += len(batch)
-                
-                # Feedback visual menos frequente para não poluir log
-                if total_linhas % 5000 == 0:
-                    print(f"[chunk {i}] Progresso: {total_linhas} linhas gravadas...")
-                
-                time.sleep(RATE_LIMIT)
-
-        print(f"✅ Processo concluído. Linhas totais gravadas: {total_linhas}")
+        print(f"✅ Processo concluído com sucesso! Total final: {total_gravado}")
 
     except SQLAlchemyError as e:
-        print("❌ Erro SQLAlchemy:")
+        print("❌ Erro de Banco de Dados:")
         print(e)
         traceback.print_exc()
         raise
     except Exception as e:
-        print("❌ Erro Genérico:")
+        print("❌ Erro Geral:")
         traceback.print_exc()
         raise
     finally:
         engine.dispose()
-        print("🔒 Conexão encerrada.")
 
 
 # =========================
