@@ -295,8 +295,8 @@ def get_property_data_from_streamline(df_administradora: pd.DataFrame) -> pd.Dat
     property_list_total = pd.DataFrame()
 
     # Tokens fixos (como você colocou)
-    TOKEN_KEY = "d9cec367a327955392db9424e0462a79"
-    TOKEN_SECRET = "6ec0ccc91eabaf773a9cd6ad5ba0acb377a6c958"
+    TOKEN_KEY = "3ef223d3bbf7086cfb86df7e98d6e5d2"
+    TOKEN_SECRET = "a88d05b895affb815cc8a4d96670698ee486ea30"
 
     for idx, row in df_administradora.iterrows():
         try:

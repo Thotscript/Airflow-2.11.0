@@ -26,8 +26,8 @@ DB_NAME = "ovh_silver"
 # ==============================
 # TOKENS FIXOS (tenant único)
 # ==============================
-TOKEN_KEY = "d9cec367a327955392db9424e0462a79"
-TOKEN_SECRET = "6ec0ccc91eabaf773a9cd6ad5ba0acb377a6c958"
+TOKEN_KEY = "3ef223d3bbf7086cfb86df7e98d6e5d2"
+TOKEN_SECRET = "a88d05b895affb815cc8a4d96670698ee486ea30"
 
 # ==============================
 # API

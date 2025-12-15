@@ -13,7 +13,7 @@ from airflow.exceptions import AirflowException
 from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 
 API_URL = "https://web.streamlinevrs.com/api/json"
-TOKEN_KEY = "d9cec367a327955392db9424e0462a79"
+TOKEN_KEY = "3ef223d3bbf7086cfb86df7e98d6e5d2"
 TOKEN_SECRET = "6ec0ccc91eabaf773a9cd6ad5ba0acb377a6c958"
 
 DB_CFG = dict(
