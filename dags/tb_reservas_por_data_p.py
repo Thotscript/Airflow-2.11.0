@@ -143,12 +143,22 @@ def extract_to_parquet_batches(engine) -> int:
         """
         
         # Lê batch (pequeno e rápido)
-        df_batch = pl.read_database(
-            query=batch_query,
-            connection=engine
-        )
+        # Estratégia: ler como dicionário Python primeiro para evitar problemas de inferência
+        with engine.connect() as conn:
+            result = conn.execute(text(batch_query))
+            rows = result.fetchall()
+            columns = result.keys()
         
-        all_dfs.append(df_batch)
+        # Converte para Polars a partir de dicionário (inferência mais robusta)
+        if rows:
+            df_batch = pl.DataFrame(
+                {col: [row[i] for row in rows] for i, col in enumerate(columns)},
+                infer_schema_length=None  # Escaneia tudo
+            )
+            all_dfs.append(df_batch)
+        else:
+            # Batch vazio (improvável mas tratamos)
+            print(f"[Extract] Batch {i+1} vazio, pulando...")
         
         percent = round((end_idx / total_ids) * 100, 1)
         print(f"[Extract] Batch {i+1}/{num_batches} extraído → {end_idx}/{total_ids} IDs ({percent}%)")
@@ -157,10 +167,15 @@ def extract_to_parquet_batches(engine) -> int:
     
     # 3. Concatena todos os batches em um único DataFrame
     print("[Extract] Concatenando batches...")
-    df_final = pl.concat(all_dfs, how="vertical")
     
-    # Remove colunas duplicadas do JOIN
-    df_final = df_final.unique(subset=None, maintain_order=True, keep="first")
+    if not all_dfs:
+        raise ValueError("Nenhum dado foi extraído dos batches")
+    
+    # Concatena com how="vertical_relaxed" para lidar com schemas ligeiramente diferentes
+    df_final = pl.concat(all_dfs, how="vertical_relaxed")
+    
+    # Remove linhas completamente duplicadas (se houver)
+    df_final = df_final.unique(maintain_order=True)
     
     print(f"[Extract] Total extraído: {df_final.shape[0]} linhas x {df_final.shape[1]} colunas")
     
