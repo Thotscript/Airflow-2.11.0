@@ -116,7 +116,7 @@ def main():
             SELECT
                 id,
                 unit_id,
-                Administradora_x,
+                Administradora,
                 confirmation_id,
                 client_id,
                 occupants,
@@ -228,7 +228,7 @@ def main():
             FROM tb_reservas_por_data
         ) AS B
             ON A.id = B.unit_id
-           AND A.Administradora = B.Administradora_x
+           AND A.Administradora = B.Administradora
            AND A.date_norm IS NOT NULL
            AND B.date_norm IS NOT NULL
            AND DATE_FORMAT(A.date_norm, '%Y%m%d') = DATE_FORMAT(B.date_norm, '%Y%m%d')
@@ -463,7 +463,7 @@ def main():
                 SELECT
                     id,
                     unit_id,
-                    Administradora_x,
+                    Administradora,
                     confirmation_id,
                     client_id,
                     occupants,
@@ -575,7 +575,7 @@ def main():
                 FROM tb_reservas_por_data
             ) AS B
                 ON A.id = B.unit_id
-               AND A.Administradora = B.Administradora_x
+               AND A.Administradora = B.Administradora
                AND A.date_norm IS NOT NULL
                AND B.date_norm IS NOT NULL
                AND DATE_FORMAT(A.date_norm, '%Y%m%d') = DATE_FORMAT(B.date_norm, '%Y%m%d')
