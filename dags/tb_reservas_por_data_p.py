@@ -57,6 +57,22 @@ NOVAS_DATAS = {
 # =========================
 # Extração em BATCHES para Parquet
 # =========================
+def get_table_columns(engine, table_name: str) -> list:
+    """
+    Retorna lista de colunas de uma tabela
+    """
+    query = f"""
+        SELECT COLUMN_NAME 
+        FROM INFORMATION_SCHEMA.COLUMNS 
+        WHERE TABLE_SCHEMA = '{DB_NAME}' 
+        AND TABLE_NAME = '{table_name}'
+        ORDER BY ORDINAL_POSITION
+    """
+    with engine.connect() as conn:
+        result = conn.execute(text(query))
+        return [row[0] for row in result]
+
+
 def extract_to_parquet_batches(engine) -> int:
     """
     Extrai dados do MySQL em BATCHES e acumula no Parquet
@@ -82,6 +98,26 @@ def extract_to_parquet_batches(engine) -> int:
     if total_ids == 0:
         raise ValueError("Nenhuma reserva encontrada com status 4,5,6,7")
     
+    # 1.5. Busca colunas das duas tabelas
+    print("[Extract] Identificando colunas das tabelas...")
+    cols_reservas = get_table_columns(engine, "tb_reservas")
+    cols_price_day = get_table_columns(engine, "tb_reservas_price_day")
+    
+    # Remove colunas duplicadas de price_day (exceto a chave de join)
+    cols_price_duplicated = set(cols_reservas) & set(cols_price_day)
+    cols_price_duplicated.discard("reservation_id")  # Mantém a FK
+    
+    # Monta SELECT com aliases para evitar conflitos
+    select_reservas = ", ".join([f"r.{col}" for col in cols_reservas])
+    select_price = ", ".join([
+        f"p.{col} as p_{col}" if col in cols_price_duplicated else f"p.{col}"
+        for col in cols_price_day
+    ])
+    
+    print(f"[Extract] Colunas tb_reservas: {len(cols_reservas)}")
+    print(f"[Extract] Colunas tb_reservas_price_day: {len(cols_price_day)}")
+    print(f"[Extract] Colunas duplicadas renomeadas: {len(cols_price_duplicated)}")
+    
     # 2. Processa IDs em batches
     num_batches = (total_ids + EXTRACT_BATCH_SIZE - 1) // EXTRACT_BATCH_SIZE
     all_dfs = []
@@ -94,12 +130,13 @@ def extract_to_parquet_batches(engine) -> int:
         batch_ids = all_ids[start_idx:end_idx]
         
         # Query com batch específico de IDs
+        # Usa as colunas identificadas com aliases para evitar duplicatas
         ids_str = ",".join(map(str, batch_ids))
         
         batch_query = f"""
             SELECT 
-                r.*, 
-                p.* 
+                {select_reservas},
+                {select_price}
             FROM tb_reservas r
             LEFT JOIN tb_reservas_price_day p ON r.id = p.reservation_id
             WHERE r.id IN ({ids_str})
