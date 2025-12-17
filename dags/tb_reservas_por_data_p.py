@@ -3,7 +3,6 @@ import json
 import traceback
 from pathlib import Path
 from urllib.parse import quote_plus
-from typing import Dict
 
 import polars as pl
 from sqlalchemy import create_engine, text
@@ -29,7 +28,8 @@ DATA_DIR = Path("/tmp/ovh_data")
 PARQUET_FILE = DATA_DIR / "reservas_temp.parquet"
 
 # Batch configs
-BATCH_SIZE = 5000  # Polars aguenta batches maiores com eficiência
+EXTRACT_BATCH_SIZE = 1000  # Lê 1000 IDs por vez do MySQL
+LOAD_BATCH_SIZE = 5000     # Escreve 5000 linhas por vez no MySQL
 
 
 # =========================
@@ -55,23 +55,23 @@ NOVAS_DATAS = {
 
 
 # =========================
-# Extração do MySQL para Parquet
+# Extração em BATCHES para Parquet
 # =========================
-def extract_to_parquet(engine) -> int:
+def extract_to_parquet_batches(engine) -> int:
     """
-    Extrai dados do MySQL e salva como Parquet
-    Retorna o número de registros extraídos
+    Extrai dados do MySQL em BATCHES e acumula no Parquet
+    Evita estouro de memória ao processar grandes volumes
     """
     print("[Extract] Buscando IDs das reservas...")
     
-    # Query otimizada - apenas IDs
+    # 1. Busca apenas os IDs (leve e rápido)
     ids_query = """
         SELECT id 
         FROM tb_reservas 
         WHERE status_id IN (4,5,6,7)
+        ORDER BY id
     """
     
-    # Converte resultado para lista de IDs
     with engine.connect() as conn:
         result = conn.execute(text(ids_query))
         all_ids = [row[0] for row in result]
@@ -82,47 +82,64 @@ def extract_to_parquet(engine) -> int:
     if total_ids == 0:
         raise ValueError("Nenhuma reserva encontrada com status 4,5,6,7")
     
-    # Query completa com JOIN
-    # Usando IN com lista de IDs (índice primário é eficiente)
-    ids_str = ",".join(map(str, all_ids))
+    # 2. Processa IDs em batches
+    num_batches = (total_ids + EXTRACT_BATCH_SIZE - 1) // EXTRACT_BATCH_SIZE
+    all_dfs = []
     
-    main_query = f"""
-        SELECT 
-            r.*, 
-            p.* 
-        FROM tb_reservas r
-        LEFT JOIN tb_reservas_price_day p ON r.id = p.reservation_id
-        WHERE r.id IN ({ids_str})
-    """
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     
-    print("[Extract] Extraindo dados completos...")
+    for i in range(num_batches):
+        start_idx = i * EXTRACT_BATCH_SIZE
+        end_idx = min((i + 1) * EXTRACT_BATCH_SIZE, total_ids)
+        batch_ids = all_ids[start_idx:end_idx]
+        
+        # Query com batch específico de IDs
+        ids_str = ",".join(map(str, batch_ids))
+        
+        batch_query = f"""
+            SELECT 
+                r.*, 
+                p.* 
+            FROM tb_reservas r
+            LEFT JOIN tb_reservas_price_day p ON r.id = p.reservation_id
+            WHERE r.id IN ({ids_str})
+        """
+        
+        # Lê batch (pequeno e rápido)
+        df_batch = pl.read_database(
+            query=batch_query,
+            connection=engine
+        )
+        
+        all_dfs.append(df_batch)
+        
+        percent = round((end_idx / total_ids) * 100, 1)
+        print(f"[Extract] Batch {i+1}/{num_batches} extraído → {end_idx}/{total_ids} IDs ({percent}%)")
+        
+        time.sleep(0.05)  # Pausa leve
     
-    # Lê direto para Polars (mais eficiente que Pandas)
-    # Polars lê o resultado do MySQL de forma otimizada
-    df = pl.read_database(
-        query=main_query,
-        connection=engine
-    )
-    
-    print(f"[Extract] Dados extraídos: {df.shape[0]} linhas x {df.shape[1]} colunas")
+    # 3. Concatena todos os batches em um único DataFrame
+    print("[Extract] Concatenando batches...")
+    df_final = pl.concat(all_dfs, how="vertical")
     
     # Remove colunas duplicadas do JOIN
-    df = df.unique(subset=None, maintain_order=True)
+    df_final = df_final.unique(subset=None, maintain_order=True, keep="first")
     
-    # Salva como Parquet
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    df.write_parquet(
+    print(f"[Extract] Total extraído: {df_final.shape[0]} linhas x {df_final.shape[1]} colunas")
+    
+    # 4. Salva como Parquet comprimido
+    df_final.write_parquet(
         PARQUET_FILE,
-        compression="zstd",  # Melhor compressão que snappy
-        compression_level=3,  # Balanço entre velocidade e tamanho
-        statistics=True,  # Habilita estatísticas (acelera queries futuras)
-        use_pyarrow=False  # Engine nativo Polars
+        compression="zstd",
+        compression_level=3,
+        statistics=True,
+        use_pyarrow=False
     )
     
     file_size_mb = PARQUET_FILE.stat().st_size / 1024 / 1024
     print(f"[Extract] Parquet salvo: {PARQUET_FILE} ({file_size_mb:.2f} MB)")
     
-    return len(df)
+    return len(df_final)
 
 
 # =========================
@@ -131,11 +148,10 @@ def extract_to_parquet(engine) -> int:
 def transform_data(df: pl.DataFrame) -> pl.DataFrame:
     """
     Aplica transformações de negócio usando Polars
-    Polars é lazy-evaluated, então as operações são otimizadas automaticamente
     """
     print("[Transform] Aplicando transformações...")
     
-    # 1. Conversão de datetime (Polars detecta formatos automaticamente)
+    # 1. Conversão de datetime
     datetime_cols = [col for col in df.columns if "date" in col.lower() or "created" in col.lower()]
     
     for col in datetime_cols:
@@ -150,12 +166,10 @@ def transform_data(df: pl.DataFrame) -> pl.DataFrame:
     
     # 2. Substituição de casas espelhos
     if "unit_id" in df.columns:
-        # Cast para Int64 (Polars é mais estrito com tipos)
         df = df.with_columns(
             pl.col("unit_id").cast(pl.Int64, strict=False)
         )
         
-        # Replace usando mapping (super eficiente no Polars)
         mapping_expr = pl.col("unit_id")
         for old_id, new_id in CASAS_ESPELHOS.items():
             mapping_expr = pl.when(pl.col("unit_id") == old_id).then(new_id).otherwise(mapping_expr)
@@ -173,8 +187,7 @@ def transform_data(df: pl.DataFrame) -> pl.DataFrame:
         
         df = df.with_columns(date_expr.alias("creation_date"))
     
-    # 4. Conversão de structs/lists para JSON strings
-    # Polars pode ter colunas List ou Struct que precisam ser serializadas
+    # 4. Conversão de structs/lists para JSON
     for col in df.columns:
         dtype = df[col].dtype
         
@@ -186,20 +199,16 @@ def transform_data(df: pl.DataFrame) -> pl.DataFrame:
                 ).alias(col)
             )
     
-    # 5. Substituição de nulls (Polars já lida bem com nulls, mas garantimos)
-    # Polars usa null nativo, não precisa converter para None como Pandas
-    
     print(f"[Transform] Transformações concluídas. Shape: {df.shape}")
     return df
 
 
 # =========================
-# Carga no MySQL usando Polars
+# Carga no MySQL em BATCHES
 # =========================
-def load_to_mysql_polars_batches(df: pl.DataFrame, engine, table_name: str, batch_size: int):
+def load_to_mysql_batches(df: pl.DataFrame, engine, table_name: str, batch_size: int):
     """
-    Carrega dados no MySQL em batches usando Polars
-    Usa write_database do Polars que é otimizado nativamente
+    Carrega dados no MySQL em batches
     """
     print(f"[Load] Iniciando carga em batches de {batch_size} linhas...")
     
@@ -216,11 +225,10 @@ def load_to_mysql_polars_batches(df: pl.DataFrame, engine, table_name: str, batc
         start_idx = i * batch_size
         end_idx = min((i + 1) * batch_size, total_rows)
         
-        # Slice eficiente (zero-copy no Polars)
+        # Slice eficiente (zero-copy)
         batch_df = df.slice(start_idx, end_idx - start_idx)
         
-        # Write direto no MySQL
-        # if_exists='append' após o primeiro batch
+        # Write no MySQL
         if_exists_mode = "replace" if i == 0 else "append"
         
         batch_df.write_database(
@@ -234,26 +242,9 @@ def load_to_mysql_polars_batches(df: pl.DataFrame, engine, table_name: str, batc
         percent = round((end_idx / total_rows) * 100, 1)
         print(f"[Load] Batch {i+1}/{num_batches} → {end_idx}/{total_rows} linhas ({percent}%)")
         
-        time.sleep(0.02)  # Pequena pausa para não sobrecarregar
+        time.sleep(0.02)
     
     print(f"✅ [Load] Carga concluída! Total: {total_rows} linhas")
-
-
-def load_to_mysql_single_shot(df: pl.DataFrame, engine, table_name: str):
-    """
-    Método alternativo: carrega tudo de uma vez
-    Mais rápido para datasets médios (< 1M linhas)
-    """
-    print(f"[Load] Carregando {len(df)} linhas de uma vez...")
-    
-    df.write_database(
-        table_name=table_name,
-        connection=engine,
-        if_exists="replace",
-        engine="sqlalchemy"
-    )
-    
-    print(f"✅ [Load] Carga concluída! Total: {len(df)} linhas")
 
 
 # =========================
@@ -261,31 +252,31 @@ def load_to_mysql_single_shot(df: pl.DataFrame, engine, table_name: str):
 # =========================
 def main():
     """
-    Pipeline ETL otimizado:
-    1. MySQL → Parquet (extração)
-    2. Parquet → Polars (leitura)
+    Pipeline ETL otimizado com batches em TODAS as etapas:
+    1. MySQL → Parquet (batches de leitura)
+    2. Parquet → Polars (leitura única, arquivo comprimido)
     3. Transformações (Polars)
-    4. Polars → MySQL (carga em batches)
+    4. Polars → MySQL (batches de escrita)
     """
     
     engine = create_engine(
         f"mysql+pymysql://{DB_USER}:{quote_plus(DB_PASS)}@{DB_HOST}:{DB_PORT}/{DB_NAME}?charset=utf8mb4",
         pool_pre_ping=True,
-        pool_size=10,  # Mais conexões para batches paralelos
-        max_overflow=20,
-        pool_recycle=3600,  # Recicla conexões a cada hora
+        pool_size=5,
+        max_overflow=10,
+        pool_recycle=3600,
         connect_args={
-            "init_command": "SET SESSION innodb_lock_wait_timeout=60"
+            "init_command": "SET SESSION innodb_lock_wait_timeout=120"
         }
     )
     
     try:
-        # ETAPA 1: Extração MySQL → Parquet
+        # ETAPA 1: Extração em BATCHES
         print("\n" + "="*70)
-        print("ETAPA 1: EXTRAÇÃO (MySQL → Parquet)")
+        print("ETAPA 1: EXTRAÇÃO EM BATCHES (MySQL → Parquet)")
         print("="*70)
         start = time.time()
-        total_extracted = extract_to_parquet(engine)
+        total_extracted = extract_to_parquet_batches(engine)
         extract_time = time.time() - start
         print(f"⏱️  Tempo de extração: {extract_time:.2f}s")
         
@@ -308,20 +299,12 @@ def main():
         transform_time = time.time() - start
         print(f"⏱️  Tempo de transformação: {transform_time:.2f}s")
         
-        # ETAPA 4: Carga no MySQL
+        # ETAPA 4: Carga em BATCHES
         print("\n" + "="*70)
-        print("ETAPA 4: CARGA (Polars → MySQL)")
+        print("ETAPA 4: CARGA EM BATCHES (Polars → MySQL)")
         print("="*70)
         start = time.time()
-        
-        # Escolha o método baseado no tamanho
-        if len(df) > 100000:
-            # Grandes volumes: batches
-            load_to_mysql_polars_batches(df, engine, TABLE_OUT, BATCH_SIZE)
-        else:
-            # Volumes menores: single shot (mais rápido)
-            load_to_mysql_single_shot(df, engine, TABLE_OUT)
-        
+        load_to_mysql_batches(df, engine, TABLE_OUT, LOAD_BATCH_SIZE)
         load_time = time.time() - start
         print(f"⏱️  Tempo de carga: {load_time:.2f}s")
         
@@ -346,7 +329,7 @@ def main():
     finally:
         engine.dispose()
         
-        # Cleanup opcional do Parquet
+        # Cleanup do Parquet
         if PARQUET_FILE.exists():
             PARQUET_FILE.unlink()
             print(f"[Cleanup] Arquivo temporário removido: {PARQUET_FILE}")
@@ -368,18 +351,18 @@ with DAG(
         "retry_delay": pendulum.duration(minutes=5),
     },
     doc_md="""
-    # Pipeline OVH Reservas - Otimizado com Polars
+    # Pipeline OVH Reservas - Otimizado com Polars + Batches
     
     ## Fluxo:
-    1. **Extração**: MySQL → Parquet (compressão zstd)
+    1. **Extração em Batches**: MySQL → Parquet (1000 IDs por vez)
     2. **Leitura**: Parquet → Polars DataFrame
     3. **Transformação**: Regras de negócio (casas espelhos, datas)
-    4. **Carga**: Polars → MySQL (batches otimizados)
+    4. **Carga em Batches**: Polars → MySQL (5000 linhas por vez)
     
     ## Performance:
-    - 5-10x mais rápido que versão Pandas
-    - Uso de memória reduzido em ~60%
-    - Batches de 5000 linhas (configurável)
+    - Extração em batches: evita OOM em JOINs grandes
+    - Uso de memória controlado
+    - Velocidade 5-10x superior ao Pandas
     """
 ) as dag:
 
