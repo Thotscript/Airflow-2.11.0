@@ -152,14 +152,36 @@ def calculate_occupancy(blocked: list, startdate: str) -> tuple:
 # Buscar casas ativas
 # =========================
 def get_active_houses():
-    """Busca todas as casas ativas com renting_type = 'RENTING'"""
+    """Busca todas as casas ativas"""
     conn = mysql.connector.connect(**DB_CFG)
     try:
-        query = """
-            SELECT id 
-            FROM ovh_silver.tb_active_houses 
-            WHERE renting_type = 'RENTING'
-        """
+        # Primeiro tenta tb_active_houses
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT COUNT(*) FROM information_schema.tables 
+            WHERE table_schema = DATABASE() 
+            AND table_name = 'tb_active_houses'
+        """)
+        table_exists = cur.fetchone()[0]
+        cur.close()
+        
+        if table_exists:
+            query = """
+                SELECT id 
+                FROM ovh_silver.tb_active_houses 
+                WHERE renting_type = 'RENTING'
+            """
+            print("Usando tabela: tb_active_houses")
+        else:
+            # Se não existir, busca da tb_reservas os unit_id únicos
+            query = """
+                SELECT DISTINCT unit_id as id
+                FROM tb_reservas
+                WHERE unit_id IS NOT NULL
+                ORDER BY unit_id
+            """
+            print("Usando tabela: tb_reservas (unit_id únicos)")
+        
         df = pd.read_sql(query, conn)
         print(f"Total de casas ativas encontradas: {len(df)}")
         return df['id'].tolist()
