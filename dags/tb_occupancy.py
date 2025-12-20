@@ -114,11 +114,27 @@ def fetch_calendar(session: requests.Session, unit_id: int, startdate: str, endd
         resp.raise_for_status()
         data = resp.json()
         
+        # DEBUG DETALHADO
+        print(f"[DEBUG] unit_id={unit_id}, período={startdate} a {enddate}")
+        print(f"[DEBUG] Response type: {type(data)}")
+        
+        if isinstance(data, list):
+            print(f"[DEBUG] É uma lista com {len(data)} itens")
+            return data
+        
+        if isinstance(data, dict):
+            print(f"[DEBUG] É um dict com keys: {list(data.keys())}")
+        
         if isinstance(data, dict) and data.get("error"):
             print(f"[WARN] API erro para unit_id={unit_id}: {data.get('error')}")
             return []
         
         blocked = extract_blocked_period(data)
+        print(f"[DEBUG] extract_blocked_period retornou: {len(blocked)} itens")
+        
+        if blocked and len(blocked) > 0:
+            print(f"[DEBUG] Primeira reserva: {blocked[0]}")
+        
         return blocked if blocked else []
     
     except requests.HTTPError as e:
@@ -156,6 +172,9 @@ def calculate_occupancy(blocked: list, startdate: str) -> tuple:
     
     if not blocked:
         return (0.0, 0, dias_no_mes)
+    
+    # DEBUG: mostrar quantas reservas estão sendo processadas
+    print(f"[DEBUG calculate_occupancy] Processando {len(blocked)} reservas para {mes_obj.strftime('%m/%Y')}")
     
     # Usar set para evitar contagem duplicada de dias
     dias_ocupados_set = set()
@@ -336,11 +355,26 @@ def main():
             startdate = month_info['startdate']
             enddate = month_info['enddate']
             
-            # Buscar calendário do mês completo
-            blocked = fetch_calendar(session, unit_id, startdate, enddate)
+            # IMPORTANTE: Buscar dados de 90 dias antes até 90 dias depois
+            # para capturar reservas que começam antes ou terminam depois do mês alvo
+            mes_obj = datetime.strptime(startdate, "%m/%d/%Y")
+            fetch_start = mes_obj - timedelta(days=90)
+            fetch_end_obj = datetime.strptime(enddate, "%m/%d/%Y") + timedelta(days=90)
             
-            # Calcular ocupação
+            fetch_startdate = fetch_start.strftime("%m/%d/%Y")
+            fetch_enddate = fetch_end_obj.strftime("%m/%d/%Y")
+            
+            # Buscar calendário com range expandido
+            blocked = fetch_calendar(session, unit_id, fetch_startdate, fetch_enddate)
+            
+            # Calcular ocupação para o mês específico
             occupancy_rate, days_occupied, days_in_month = calculate_occupancy(blocked, startdate)
+            
+            # Log detalhado para debug
+            if len(blocked) > 0 and days_occupied == 0:
+                print(f"[ALERTA] Casa {unit_id} tem {len(blocked)} reservas mas ocupação zerada em {month_info['month_str']}")
+                for idx, b in enumerate(blocked[:3], 1):  # Mostra até 3 reservas
+                    print(f"  Reserva {idx}: {b['startdate']} até {b['enddate']}")
             
             results.append({
                 'unit_id': unit_id,
