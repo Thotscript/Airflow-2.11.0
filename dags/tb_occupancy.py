@@ -187,7 +187,7 @@ def get_active_houses():
     try:
         query = """
             SELECT id 
-            FROM tb_active_houses 
+            FROM ovh_silver.tb_active_houses 
             WHERE renting_type = 'RENTING'
         """
         df = pd.read_sql(query, conn)
