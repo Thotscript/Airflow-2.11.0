@@ -58,10 +58,35 @@ def make_payload_calendar(unit_id: int, startdate: str, enddate: str):
     }
 
 def extract_blocked_period(data):
-    """Extrai blocked_period do response"""
+    """Extrai blocked_period do response - trata múltiplos formatos"""
+    # Se data for uma lista, retorna ela diretamente
+    if isinstance(data, list):
+        return data
+    
+    # Se não for dict, retorna lista vazia
+    if not isinstance(data, dict):
+        return []
+    
+    # Tenta extrair de Response.data.blocked_period
     if "Response" in data:
-        return data["Response"]["data"].get("blocked_period", [])
-    return data.get("data", {}).get("blocked_period", [])
+        response_data = data.get("Response")
+        if isinstance(response_data, dict):
+            inner_data = response_data.get("data")
+            if isinstance(inner_data, dict):
+                blocked = inner_data.get("blocked_period", [])
+                return blocked if blocked else []
+    
+    # Tenta extrair de data.blocked_period
+    data_field = data.get("data")
+    if isinstance(data_field, dict):
+        blocked = data_field.get("blocked_period", [])
+        return blocked if blocked else []
+    
+    # Se data_field for lista, retorna ela
+    if isinstance(data_field, list):
+        return data_field
+    
+    return []
 
 def fetch_calendar(session: requests.Session, unit_id: int, startdate: str, enddate: str) -> list:
     """Busca o calendário de uma casa para um período específico"""
@@ -70,7 +95,6 @@ def fetch_calendar(session: requests.Session, unit_id: int, startdate: str, endd
     
     try:
         resp = session.post(API_URL, json=payload, headers=headers, timeout=(10, 40))
-        print(f"[Calendar] unit_id={unit_id}, {startdate} a {enddate} | Status: {resp.status_code}")
         
         resp.raise_for_status()
         data = resp.json()
@@ -152,36 +176,14 @@ def calculate_occupancy(blocked: list, startdate: str) -> tuple:
 # Buscar casas ativas
 # =========================
 def get_active_houses():
-    """Busca todas as casas ativas"""
+    """Busca todas as casas ativas com renting_type = 'RENTING'"""
     conn = mysql.connector.connect(**DB_CFG)
     try:
-        # Primeiro tenta tb_active_houses
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT COUNT(*) FROM information_schema.tables 
-            WHERE table_schema = DATABASE() 
-            AND table_name = 'ovh_silver.tb_active_houses'
-        """)
-        table_exists = cur.fetchone()[0]
-        cur.close()
-        
-        if table_exists:
-            query = """
-                SELECT id 
-                FROM ovh_silver.tb_active_houses 
-                WHERE renting_type = 'RENTING'
-            """
-            print("Usando tabela: tb_active_houses")
-        else:
-            # Se não existir, busca da tb_reservas os unit_id únicos
-            query = """
-                SELECT DISTINCT unit_id as id
-                FROM tb_reservas
-                WHERE unit_id IS NOT NULL
-                ORDER BY unit_id
-            """
-            print("Usando tabela: tb_reservas (unit_id únicos)")
-        
+        query = """
+            SELECT id 
+            FROM ovh_silver.tb_active_houses 
+            WHERE renting_type = 'RENTING'
+        """
         df = pd.read_sql(query, conn)
         print(f"Total de casas ativas encontradas: {len(df)}")
         return df['id'].tolist()
