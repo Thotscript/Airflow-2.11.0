@@ -89,21 +89,25 @@ def extract_blocked_period(data):
     return []
 
 def fetch_calendar(session: requests.Session, unit_id: int, startdate: str, enddate: str) -> list:
-    """Busca o calendário de uma casa para um período específico"""
     payload = make_payload_calendar(unit_id, startdate, enddate)
     headers = {"Content-Type": "application/json"}
     
     try:
         resp = session.post(API_URL, json=payload, headers=headers, timeout=(10, 40))
-        
         resp.raise_for_status()
         data = resp.json()
+        
+        # DEBUG: Imprimir resposta completa
+        print(f"[DEBUG] unit_id={unit_id}, período={startdate} a {enddate}")
+        print(f"[DEBUG] Response keys: {data.keys() if isinstance(data, dict) else type(data)}")
         
         if isinstance(data, dict) and data.get("error"):
             print(f"[WARN] API erro para unit_id={unit_id}: {data.get('error')}")
             return []
         
         blocked = extract_blocked_period(data)
+        print(f"[DEBUG] Blocked periods encontrados: {len(blocked)}")
+        
         return blocked if blocked else []
     
     except requests.HTTPError as e:
