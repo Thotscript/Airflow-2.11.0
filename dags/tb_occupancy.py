@@ -138,7 +138,6 @@ def calculate_occupancy(blocked: list, startdate: str) -> tuple:
         return (0.0, 0, dias_no_mes)
     
     # Mês alvo (derivado do payload)
-    mes_alvo = datetime.strptime(startdate, "%m/%d/%Y").strftime("%Y-%m")
     mes_obj = datetime.strptime(startdate, "%m/%d/%Y")
     
     # Último dia do mês alvo
@@ -150,18 +149,25 @@ def calculate_occupancy(blocked: list, startdate: str) -> tuple:
     dias_no_mes = last_day_month.day
     dias_ocupados = 0
     
+    # Primeiro e último dia do mês alvo
+    first_day_month = mes_obj
+    
     for b in blocked:
         try:
             start = datetime.strptime(b["startdate"], "%m/%d/%Y")
             end = datetime.strptime(b["enddate"], "%m/%d/%Y")
             
-            # IGNORA reservas que não começam no mês alvo
-            if start.strftime("%Y-%m") != mes_alvo:
+            # Verifica se há sobreposição com o mês alvo
+            # A reserva deve começar antes ou durante o mês E terminar depois ou durante o mês
+            if end < first_day_month or start > last_day_month:
+                # Sem sobreposição
                 continue
             
-            # Limita ao mês
-            end_limited = min(end, last_day_month)
-            dias = (end_limited - start).days + 1
+            # Calcula a interseção da reserva com o mês
+            overlap_start = max(start, first_day_month)
+            overlap_end = min(end, last_day_month)
+            
+            dias = (overlap_end - overlap_start).days + 1
             dias = max(dias, 0)
             dias_ocupados += dias
         
@@ -181,7 +187,7 @@ def get_active_houses():
     try:
         query = """
             SELECT id 
-            FROM ovh_silver.tb_active_houses 
+            FROM tb_active_houses 
             WHERE renting_type = 'RENTING'
         """
         df = pd.read_sql(query, conn)
