@@ -160,7 +160,7 @@ def get_active_houses():
         cur.execute("""
             SELECT COUNT(*) FROM information_schema.tables 
             WHERE table_schema = DATABASE() 
-            AND table_name = 'tb_active_houses'
+            AND table_name = 'ovh_silver.tb_active_houses'
         """)
         table_exists = cur.fetchone()[0]
         cur.close()
