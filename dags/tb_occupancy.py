@@ -145,7 +145,8 @@ def calculate_occupancy(blocked: list, startdate: str) -> tuple:
     # Mês alvo (derivado do payload)
     mes_obj = datetime.strptime(startdate, "%m/%d/%Y")
     
-    # Último dia do mês alvo
+    # Primeiro e último dia do mês alvo
+    first_day_month = mes_obj
     if mes_obj.month == 12:
         last_day_month = datetime(mes_obj.year + 1, 1, 1) - timedelta(days=1)
     else:
@@ -155,9 +156,6 @@ def calculate_occupancy(blocked: list, startdate: str) -> tuple:
     
     if not blocked:
         return (0.0, 0, dias_no_mes)
-    
-    # Primeiro dia do mês alvo
-    first_day_month = mes_obj
     
     # Usar set para evitar contagem duplicada de dias
     dias_ocupados_set = set()
@@ -172,21 +170,27 @@ def calculate_occupancy(blocked: list, startdate: str) -> tuple:
                 continue
             
             # Calcula a interseção da reserva com o mês
+            # IMPORTANTE: Garante que não ultrapasse o último dia do mês
             overlap_start = max(start, first_day_month)
             overlap_end = min(end, last_day_month)
             
-            # Adiciona cada dia ocupado ao set (evita duplicatas)
+            # Adiciona cada dia ocupado ao set (apenas dentro do mês)
             current_day = overlap_start
             while current_day <= overlap_end:
-                dias_ocupados_set.add(current_day.date())
+                # Segurança extra: só adiciona se estiver dentro do mês
+                if first_day_month <= current_day <= last_day_month:
+                    dias_ocupados_set.add(current_day.date())
                 current_day += timedelta(days=1)
         
         except Exception as e:
-            print(f"[WARN] Erro ao processar bloqueio: {e}")
+            print(f"[WARN] Erro ao processar bloqueio {b}: {e}")
             continue
     
     dias_ocupados = len(dias_ocupados_set)
-    ocupacao = min(dias_ocupados / dias_no_mes, 1.0)
+    
+    # Garantir que nunca ultrapasse 100%
+    dias_ocupados = min(dias_ocupados, dias_no_mes)
+    ocupacao = dias_ocupados / dias_no_mes
     
     return (ocupacao, dias_ocupados, dias_no_mes)
 
@@ -353,7 +357,7 @@ def main():
             if processed % 10 == 0:
                 print(f"Progresso: {processed}/{total_requests} requisições processadas ({processed/total_requests*100:.1f}%)")
             
-            print(f"  Casa {unit_id} | {month_info['month_str']} | Ocupação: {occupancy_rate:.2%}")
+            print(f"  Casa {unit_id} | {month_info['month_str']} | Ocupação: {occupancy_rate:.2%} ({days_occupied}/{days_in_month} dias)")
     
     # Criar DataFrame e salvar
     df_results = pd.DataFrame(results)
@@ -361,7 +365,12 @@ def main():
     print(f"Total de registros: {len(df_results)}")
     print(f"Ocupação média 2026: {df_results['occupancy_rate'].mean():.2%}")
     print(f"\nOcupação por mês:")
-    print(df_results.groupby('month_str')['occupancy_rate'].mean().apply(lambda x: f"{x:.2%}"))
+    monthly_summary = df_results.groupby('month_str').agg({
+        'occupancy_rate': 'mean',
+        'days_occupied': 'mean'
+    })
+    for month, row in monthly_summary.iterrows():
+        print(f"  {month}: {row['occupancy_rate']:.2%} (média {row['days_occupied']:.1f} dias)")
     
     save_occupancy_data(df_results)
     print("\n✓ Processamento concluído com sucesso!")
