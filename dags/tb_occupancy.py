@@ -111,6 +111,11 @@ def fetch_calendar(session: requests.Session, unit_id: int, startdate: str, endd
         resp.raise_for_status()
         data = resp.json()
         
+        if data.get("data") is None and data.get("Response") is None:
+            print(f"!!! ALERTA DE RESPOSTA VAZIA !!!")
+            print(f"Unit: {unit_id} | Period: {startdate} - {enddate}")
+            print(f"JSON recebido: {data}")
+            
         # DEBUG DETALHADO
         if isinstance(data, list):
             print(f"[DEBUG] unit_id={unit_id}: API retornou lista com {len(data)} itens")
