@@ -174,7 +174,7 @@ def calculate_occupancy(blocked: list, startdate: str) -> tuple:
         return (0.0, 0, dias_no_mes)
     
     # DEBUG: mostrar quantas reservas estão sendo processadas
-    print(f"[DEBUG calculate_occupancy] Processando {len(blocked)} reservas para {mes_obj.strftime('%m/%Y')}")
+    reservas_com_overlap = 0
     
     # Usar set para evitar contagem duplicada de dias
     dias_ocupados_set = set()
@@ -187,6 +187,8 @@ def calculate_occupancy(blocked: list, startdate: str) -> tuple:
             # Verifica se há sobreposição com o mês alvo
             if end < first_day_month or start > last_day_month:
                 continue
+            
+            reservas_com_overlap += 1
             
             # Calcula a interseção da reserva com o mês
             # IMPORTANTE: Garante que não ultrapasse o último dia do mês
@@ -210,6 +212,10 @@ def calculate_occupancy(blocked: list, startdate: str) -> tuple:
     # Garantir que nunca ultrapasse 100%
     dias_ocupados = min(dias_ocupados, dias_no_mes)
     ocupacao = dias_ocupados / dias_no_mes
+    
+    # Log final
+    if len(blocked) > 0:
+        print(f"[DEBUG] {mes_obj.strftime('%m/%Y')}: {len(blocked)} reservas totais, {reservas_com_overlap} com overlap → {dias_ocupados} dias")
     
     return (ocupacao, dias_ocupados, dias_no_mes)
 
@@ -355,26 +361,38 @@ def main():
             startdate = month_info['startdate']
             enddate = month_info['enddate']
             
-            # IMPORTANTE: Buscar dados de 90 dias antes até 90 dias depois
-            # para capturar reservas que começam antes ou terminam depois do mês alvo
-            mes_obj = datetime.strptime(startdate, "%m/%d/%Y")
-            fetch_start = mes_obj - timedelta(days=90)
-            fetch_end_obj = datetime.strptime(enddate, "%m/%d/%Y") + timedelta(days=90)
+            # Buscar calendário do mês completo
+            # A API já retorna reservas que começam antes e terminam durante o mês
+            blocked = fetch_calendar(session, unit_id, startdate, enddate)
             
-            fetch_startdate = fetch_start.strftime("%m/%d/%Y")
-            fetch_enddate = fetch_end_obj.strftime("%m/%d/%Y")
-            
-            # Buscar calendário com range expandido
-            blocked = fetch_calendar(session, unit_id, fetch_startdate, fetch_enddate)
-            
-            # Calcular ocupação para o mês específico
+            # Calcular ocupação - a função já filtra apenas os dias do mês alvo
             occupancy_rate, days_occupied, days_in_month = calculate_occupancy(blocked, startdate)
             
-            # Log detalhado para debug
+            # Log detalhado para debug - só alerta se houver reservas QUE TOCAM o mês
             if len(blocked) > 0 and days_occupied == 0:
-                print(f"[ALERTA] Casa {unit_id} tem {len(blocked)} reservas mas ocupação zerada em {month_info['month_str']}")
-                for idx, b in enumerate(blocked[:3], 1):  # Mostra até 3 reservas
-                    print(f"  Reserva {idx}: {b['startdate']} até {b['enddate']}")
+                # Verifica se alguma reserva realmente toca o mês
+                mes_obj = datetime.strptime(startdate, "%m/%d/%Y")
+                first_day = mes_obj
+                if mes_obj.month == 12:
+                    last_day = datetime(mes_obj.year + 1, 1, 1) - timedelta(days=1)
+                else:
+                    last_day = datetime(mes_obj.year, mes_obj.month + 1, 1) - timedelta(days=1)
+                
+                reservas_que_tocam = []
+                for b in blocked:
+                    try:
+                        start = datetime.strptime(b["startdate"], "%m/%d/%Y")
+                        end = datetime.strptime(b["enddate"], "%m/%d/%Y")
+                        # Verifica overlap
+                        if not (end < first_day or start > last_day):
+                            reservas_que_tocam.append(b)
+                    except:
+                        pass
+                
+                if len(reservas_que_tocam) > 0:
+                    print(f"[ALERTA CRÍTICO] Casa {unit_id}: {len(reservas_que_tocam)} reservas tocam {month_info['month_str']} mas ocupação = 0!")
+                    for idx, b in enumerate(reservas_que_tocam[:3], 1):
+                        print(f"  Reserva {idx}: {b['startdate']} até {b['enddate']}")
             
             results.append({
                 'unit_id': unit_id,
