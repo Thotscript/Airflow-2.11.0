@@ -60,14 +60,7 @@ def make_payload_calendar(unit_id: int, startdate: str, enddate: str):
 def extract_blocked_period(data):
     """
     Extrai blocked_period do response - trata múltiplos formatos
-    
-    Formatos suportados:
-    1. Lista direta: [{'startdate': ..., 'enddate': ...}, ...]
-    2. Dict com Response.data.blocked_period
-    3. Dict com data.blocked_period
-    4. Dict com apenas status (sem reservas)
     """
-    
     # Formato 1: Se data for uma lista, retorna ela diretamente
     if isinstance(data, list):
         return data
@@ -76,7 +69,7 @@ def extract_blocked_period(data):
     if not isinstance(data, dict):
         return []
     
-    # Formato 2: Tenta extrair de Response.data.blocked_period
+    # Formato 2: Response.data.blocked_period (estrutura antiga)
     if "Response" in data:
         response_data = data.get("Response")
         if isinstance(response_data, dict):
@@ -85,19 +78,23 @@ def extract_blocked_period(data):
                 blocked = inner_data.get("blocked_period", [])
                 if blocked:
                     return blocked
+            elif isinstance(inner_data, list):
+                return inner_data
     
-    # Formato 3: Tenta extrair de data.blocked_period
+    # Formato 3: data como campo (pode ser dict ou lista)
     data_field = data.get("data")
+    
+    # Se data_field for lista direta, retorna
+    if isinstance(data_field, list):
+        return data_field
+    
+    # Se data_field for dict, tenta pegar blocked_period
     if isinstance(data_field, dict):
         blocked = data_field.get("blocked_period", [])
         if blocked:
             return blocked
     
-    # Formato 4: Se data_field for lista, retorna ela
-    if isinstance(data_field, list):
-        return data_field
-    
-    # Formato 5: Apenas status (sem reservas)
+    # Formato 4: Apenas status (sem reservas)
     if "status" in data and not data_field:
         return []
     
@@ -115,25 +112,28 @@ def fetch_calendar(session: requests.Session, unit_id: int, startdate: str, endd
         data = resp.json()
         
         # DEBUG DETALHADO
-        print(f"[DEBUG] unit_id={unit_id}, período={startdate} a {enddate}")
-        print(f"[DEBUG] Response type: {type(data)}")
-        
         if isinstance(data, list):
-            print(f"[DEBUG] É uma lista com {len(data)} itens")
+            print(f"[DEBUG] unit_id={unit_id}: API retornou lista com {len(data)} itens")
             return data
         
         if isinstance(data, dict):
-            print(f"[DEBUG] É um dict com keys: {list(data.keys())}")
+            data_field = data.get("data")
+            print(f"[DEBUG] unit_id={unit_id}: dict com 'data' = {type(data_field)}")
+            if isinstance(data_field, list):
+                print(f"[DEBUG] unit_id={unit_id}: data é lista com {len(data_field)} reservas")
+            elif isinstance(data_field, dict):
+                bp = data_field.get("blocked_period", [])
+                print(f"[DEBUG] unit_id={unit_id}: data.blocked_period = {len(bp) if bp else 0} reservas")
         
         if isinstance(data, dict) and data.get("error"):
             print(f"[WARN] API erro para unit_id={unit_id}: {data.get('error')}")
             return []
         
         blocked = extract_blocked_period(data)
-        print(f"[DEBUG] extract_blocked_period retornou: {len(blocked)} itens")
+        print(f"[DEBUG] unit_id={unit_id}: extract_blocked_period retornou {len(blocked)} reservas")
         
         if blocked and len(blocked) > 0:
-            print(f"[DEBUG] Primeira reserva: {blocked[0]}")
+            print(f"[DEBUG] unit_id={unit_id}: Primeira reserva: {blocked[0]['startdate']} até {blocked[0]['enddate']}")
         
         return blocked if blocked else []
     
