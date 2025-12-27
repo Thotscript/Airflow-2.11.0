@@ -218,7 +218,7 @@ def create_occupancy_table():
             `days_occupied` INT NULL,
             `days_in_month` INT NULL,
             `extraction_date` DATETIME NOT NULL,
-            PRIMARY KEY (`unit_id`, `year`, `month`)
+            PRIMARY KEY (`unit_id`, `year`, `month`, `extraction_date`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """
         cur.execute(create_sql)
@@ -231,7 +231,7 @@ def save_occupancy_data(df: pd.DataFrame):
     conn = mysql.connector.connect(**DB_CFG)
     try:
         cur = conn.cursor()
-        insert_sql = f"REPLACE INTO `{TB_NAME}` (unit_id, year, month, month_str, occupancy_rate, days_occupied, days_in_month, extraction_date) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
+        insert_sql = f"INSERT INTO `{TB_NAME}` (unit_id, year, month, month_str, occupancy_rate, days_occupied, days_in_month, extraction_date) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
         cur.executemany(insert_sql, [tuple(r) for r in df.itertuples(index=False, name=None)])
         conn.commit()
     finally:
