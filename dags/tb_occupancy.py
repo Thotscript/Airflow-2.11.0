@@ -231,7 +231,17 @@ def save_occupancy_data(df: pd.DataFrame):
     conn = mysql.connector.connect(**DB_CFG)
     try:
         cur = conn.cursor()
-        insert_sql = f"INSERT INTO `{TB_NAME}` (unit_id, year, month, month_str, occupancy_rate, days_occupied, days_in_month, extraction_date) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
+        # SQL com tratamento de duplicidade
+        insert_sql = f"""
+        INSERT INTO `{TB_NAME}` 
+            (unit_id, year, month, month_str, occupancy_rate, days_occupied, days_in_month, extraction_date) 
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            occupancy_rate = VALUES(occupancy_rate),
+            days_occupied = VALUES(days_occupied),
+            days_in_month = VALUES(days_in_month),
+            extraction_date = VALUES(extraction_date)
+        """
         cur.executemany(insert_sql, [tuple(r) for r in df.itertuples(index=False, name=None)])
         conn.commit()
     finally:
