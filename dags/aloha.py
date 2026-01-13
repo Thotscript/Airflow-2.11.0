@@ -867,11 +867,26 @@ def fazer_upload(page, cliente: str, caminho_arquivo: str, qtd_linhas: int):
     log_message = ""
     casas_nao_cadastradas: List[str] = []
 
+    def dump_debug(tag: str):
+        ts = int(time.time())
+        try:
+            page.screenshot(path=f"/tmp/aloha_upload_{tag}_{cliente}_{ts}.png", full_page=True)
+            print(f"[ALOHA][UPLOAD] screenshot: /tmp/aloha_upload_{tag}_{cliente}_{ts}.png")
+        except Exception as e:
+            print("[ALOHA][UPLOAD] falhou screenshot:", repr(e))
+        try:
+            html = page.content()
+            with open(f"/tmp/aloha_upload_{tag}_{cliente}_{ts}.html", "w", encoding="utf-8") as f:
+                f.write(html)
+            print(f"[ALOHA][UPLOAD] html: /tmp/aloha_upload_{tag}_{cliente}_{ts}.html")
+        except Exception as e:
+            print("[ALOHA][UPLOAD] falhou salvar html:", repr(e))
+
     try:
-        page.wait_for_selector("a[data-click='NewOrderUploads']", timeout=30000)
+        page.wait_for_selector("a[data-click='NewOrderUploads']", timeout=60000)
         page.click("a[data-click='NewOrderUploads']")
 
-        page.wait_for_selector("#OrderUploadCompanyId", timeout=30000)
+        page.wait_for_selector("#OrderUploadCompanyId", timeout=60000)
         page.select_option("#OrderUploadCompanyId", label=cliente)
 
         page.fill("#OrderUploadMaxRows", str(qtd_linhas))
@@ -879,28 +894,98 @@ def fazer_upload(page, cliente: str, caminho_arquivo: str, qtd_linhas: int):
         # upload arquivo
         page.set_input_files("#OrderUploadFile", caminho_arquivo)
 
-        page.click("//button[contains(., 'continue')]")
-        time.sleep(8)
+        # garante que o arquivo foi de fato setado antes de clicar Continue
+        page.wait_for_function(
+            """() => {
+                const el = document.querySelector("#OrderUploadFile");
+                return el && el.files && el.files.length > 0;
+            }""",
+            timeout=30000,
+        )
 
-        page.wait_for_selector("div.panel-body", timeout=60000)
+        # botão continue pode ficar disabled até o file input estar ok
+        btn_continue = page.locator("button:has-text('continue'), button:has-text('Continue')")
+        btn_continue.wait_for(state="visible", timeout=60000)
+        page.wait_for_function("btn => !btn.disabled", btn_continue, timeout=60000)
+        btn_continue.click()
 
-        # casas não cadastradas aparecem nesses smalls
-        page.wait_for_selector("div.row div.col-md-3 small", timeout=60000)
-        casas_elements = page.query_selector_all("div.row div.col-md-3 small")
-        casas_nao_cadastradas = [c.inner_text().strip() for c in casas_elements if c.inner_text().strip()]
+        # aguarda “resultados” do parsing do arquivo
+        page.wait_for_selector("div.panel-body", timeout=90000)
 
-        # tenta clicar Importar, se existir
-        importar_btn = page.query_selector("//button[contains(., 'Importar')]")
-        if importar_btn:
-            importar_btn.click()
-            log_message += f"Upload para o cliente {cliente} realizado com sucesso!\n"
-        else:
-            log_message += f"Sem novas reservas para importar para o cliente {cliente}.\n"
+        # casas não cadastradas (se existirem)
+        try:
+            page.wait_for_selector("div.row div.col-md-3 small", timeout=15000)
+            casas_elements = page.query_selector_all("div.row div.col-md-3 small")
+            casas_nao_cadastradas = [c.inner_text().strip() for c in casas_elements if c.inner_text().strip()]
+        except Exception:
+            casas_nao_cadastradas = []
+
+        # --- IMPORTAR ---
+        btn_importar = page.locator("button:has-text('Importar'), button:has-text('Import')")
+        if btn_importar.count() == 0:
+            # sem botão -> normalmente significa que não há nada pra importar ou layout mudou
+            log_message += f"Sem botão Importar / nada para importar para o cliente {cliente}.\n"
+            return casas_nao_cadastradas, log_message
+
+        btn_importar.first.wait_for(state="visible", timeout=60000)
+
+        # Se estiver disabled, muitas telas exigem selecionar linhas (checkbox) antes:
+        # tenta selecionar o "select all" ou pelo menos 1 checkbox.
+        if btn_importar.first.is_disabled():
+            # tenta checkbox do cabeçalho primeiro
+            header_cb = page.locator("th input[type='checkbox']")
+            row_cb = page.locator("table input[type='checkbox']")
+            try:
+                if header_cb.count() > 0:
+                    header_cb.first.check()
+                elif row_cb.count() > 0:
+                    row_cb.first.check()
+            except Exception:
+                pass
+
+        # Agora espera habilitar (ou falha controlada com debug)
+        try:
+            page.wait_for_function("btn => !btn.disabled", btn_importar.first, timeout=60000)
+        except Exception:
+            # coleta mensagens de erro que expliquem por que não habilitou
+            dump_debug("import_disabled")
+
+            # tenta capturar alerts/textos comuns
+            try:
+                alerts = page.locator(".alert, .alert-danger, .alert-warning, .text-danger, .has-error")
+                msgs = []
+                for i in range(min(alerts.count(), 10)):
+                    t = alerts.nth(i).inner_text().strip()
+                    if t:
+                        msgs.append(t)
+                if msgs:
+                    log_message += (
+                        f"Não foi possível importar para {cliente}: botão Importar permaneceu desabilitado.\n"
+                        f"Mensagens na tela: {' | '.join(msgs)}\n"
+                    )
+                else:
+                    log_message += (
+                        f"Não foi possível importar para {cliente}: botão Importar permaneceu desabilitado "
+                        f"(provável: sem linhas válidas/duplicadas/validação).\n"
+                    )
+            except Exception:
+                log_message += (
+                    f"Não foi possível importar para {cliente}: botão Importar permaneceu desabilitado "
+                    f"(sem detalhes capturados).\n"
+                )
+
+            return casas_nao_cadastradas, log_message
+
+        # Se habilitou, clica
+        btn_importar.first.click()
+        log_message += f"Upload para o cliente {cliente} realizado com sucesso!\n"
 
     except Exception as e:
+        dump_debug("exception")
         log_message += f"Ocorreu um erro durante o upload para {cliente}. Erro: {e}\n"
 
     return casas_nao_cadastradas, log_message
+
 
 
 def aloha_upload_and_collect_missing():
