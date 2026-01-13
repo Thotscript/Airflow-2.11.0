@@ -4,21 +4,21 @@ ARG AIRFLOW_VERSION=2.11.0
 ARG PYTHON_VERSION=3.12
 ARG CONSTRAINT_URL=https://raw.githubusercontent.com/apache/airflow/constraints-${AIRFLOW_VERSION}/constraints-${PYTHON_VERSION}.txt
 
-# Playwright: coloca os browsers num caminho estável (evita /root/.cache)
+# Define caminho estável para os browsers do Playwright
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
-USER root
-
+# Copia os requirements primeiro (melhor cache)
 COPY requirements.txt /requirements.txt
 
-# 1) Instala suas dependências do requirements usando constraints do Airflow
-# 2) Instala Playwright
-# 3) Baixa Chromium + dependências do SO
-# 4) Ajusta permissões do diretório de browsers pro usuário airflow
+# Instala pacotes Python como o usuário airflow
+USER airflow
 RUN pip install --upgrade pip && \
     pip install --no-cache-dir -r /requirements.txt -c ${CONSTRAINT_URL} && \
-    pip install --no-cache-dir playwright && \
-    python -m playwright install --with-deps chromium && \
+    pip install --no-cache-dir playwright
+
+# Agora instala os browsers e dependências do sistema como root
+USER root
+RUN python -m playwright install --with-deps chromium && \
     mkdir -p /ms-playwright && \
     chown -R airflow:0 /ms-playwright && \
     chmod -R g+rwX /ms-playwright
