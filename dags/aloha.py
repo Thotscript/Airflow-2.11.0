@@ -409,7 +409,7 @@ def enrich_with_mysql(merged_df: pd.DataFrame) -> pd.DataFrame:
     )
 
     merged_df["unit_id"] = pd.to_numeric(merged_df.get("unit_id"), errors="coerce").astype("Int64")
-    
+
     df_conc["id_house"] = pd.to_numeric(df_conc.get("id_house"), errors="coerce").astype("Int64")
 
     merged_df = merged_df.merge(
@@ -507,6 +507,38 @@ def write_excels_local(final_df: pd.DataFrame) -> pd.DataFrame:
 
     return filtered_df
 
+def normalize_reservation_key(df: pd.DataFrame, col: str = "Reservation #") -> pd.DataFrame:
+    """
+    Normaliza a coluna de chave do merge para string consistente.
+    - Remove espaços
+    - Converte floats tipo 33761.0 -> "33761"
+    - Converte NaN -> ""
+    """
+    if df is None or df.empty:
+        return df
+
+    if col not in df.columns:
+        # não cria coluna aqui, só retorna
+        return df
+
+    s = df[col]
+
+    # Primeiro converte pra string preservando NaN
+    s = s.astype("string")
+
+    # Tira espaços e normaliza
+    s = s.str.strip()
+
+    # Corrige casos vindos como "33761.0"
+    # (somente quando for número com .0 no final)
+    s = s.str.replace(r"^(\d+)\.0$", r"\1", regex=True)
+
+    # Se vier vazio/NA vira ""
+    s = s.fillna("")
+
+    df[col] = s
+    return df
+
 
 # =========================
 # DIFF (comparação atual vs anterior)
@@ -522,7 +554,15 @@ def compute_changes(df_atual: pd.DataFrame, df_anterior: pd.DataFrame) -> Tuple[
     if "Reservation #" not in df_anterior.columns:
         df_anterior["Reservation #"] = pd.NA
 
-    df_merged = pd.merge(df_atual, df_anterior, on="Reservation #", suffixes=("_atual", "_anterior"))
+    df_atual = normalize_reservation_key(df_atual, "Reservation #")
+    df_anterior = normalize_reservation_key(df_anterior, "Reservation #")
+
+    df_merged = pd.merge(
+        df_atual,
+        df_anterior,
+        on="Reservation #",
+        suffixes=("_atual", "_anterior"),
+)
 
     colunas_datas = [
         "Check-In Date_atual", "Check-In Date_anterior",
