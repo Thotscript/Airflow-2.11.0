@@ -696,12 +696,85 @@ def build_browser():
     return playwright, browser, context, page
 
 
+
 def aloha_login(page):
-    page.goto(ALOHA_LOGIN_URL, timeout=60000)
+    # 1) abre login
+    page.goto(ALOHA_LOGIN_URL, wait_until="domcontentloaded", timeout=60000)
+
+    # Debug básico (vai pro log do Airflow)
+    print("[ALOHA] URL após goto:", page.url)
+    try:
+        print("[ALOHA] title:", page.title())
+    except Exception:
+        pass
+
+    # 2) espera inputs existirem
+    page.wait_for_selector("#UserUsername", timeout=60000)
+    page.wait_for_selector("#UserPassword", timeout=60000)
+
+    # 3) preenche
     page.fill("#UserUsername", ALOHA_EMAIL)
     page.fill("#UserPassword", ALOHA_SENHA)
-    page.click("//button[text()='Entrar']")
-    page.wait_for_selector("a[data-click='NewOrderUploads']", timeout=60000)
+
+    # 4) tenta clicar no botão de várias formas
+    clicked = False
+    selectors = [
+        "//button[normalize-space()='Entrar']",
+        "//button[contains(normalize-space(.), 'Entrar')]",
+        "button[type='submit']",
+        "input[type='submit']",
+        "text=Entrar",
+    ]
+
+    for sel in selectors:
+        try:
+            page.wait_for_selector(sel, timeout=8000)
+            page.click(sel)
+            clicked = True
+            break
+        except PlaywrightTimeoutError:
+            continue
+        except Exception:
+            continue
+
+    if not clicked:
+        # fallback: submit via Enter no campo senha
+        try:
+            page.focus("#UserPassword")
+            page.keyboard.press("Enter")
+            clicked = True
+        except Exception:
+            clicked = False
+
+    # 5) confirma login
+    try:
+        page.wait_for_selector("a[data-click='NewOrderUploads']", timeout=60000)
+        print("[ALOHA] Login OK")
+        return True
+    except PlaywrightTimeoutError:
+        # DEBUG PESADO: salva evidências no /tmp (no container)
+        ts = int(time.time())
+        try:
+            page.screenshot(path=f"/tmp/aloha_login_fail_{ts}.png", full_page=True)
+            print(f"[ALOHA] screenshot salvo em /tmp/aloha_login_fail_{ts}.png")
+        except Exception as e:
+            print("[ALOHA] falhou screenshot:", repr(e))
+
+        try:
+            html = page.content()
+            with open(f"/tmp/aloha_login_fail_{ts}.html", "w", encoding="utf-8") as f:
+                f.write(html)
+            print(f"[ALOHA] html salvo em /tmp/aloha_login_fail_{ts}.html")
+        except Exception as e:
+            print("[ALOHA] falhou salvar html:", repr(e))
+
+        print("[ALOHA] URL final:", page.url)
+        try:
+            print("[ALOHA] title final:", page.title())
+        except Exception:
+            pass
+
+        raise RuntimeError("Falha no login do Aloha: não encontrou NewOrderUploads após submit.")
 
 
 # =========================
