@@ -193,20 +193,67 @@ def build_session():
 # =========================
 def read_sheet_as_df(sheet_id: str, tab_name: str) -> pd.DataFrame:
     service = get_sheets_service()
-    resp = service.spreadsheets().values().get(spreadsheetId=sheet_id, range=tab_name).execute()
+    resp = service.spreadsheets().values().get(
+        spreadsheetId=sheet_id,
+        range=tab_name,
+        valueRenderOption="UNFORMATTED_VALUE",
+    ).execute()
+
     values = resp.get("values", [])
     if not values:
         return pd.DataFrame()
 
-    header, *rows = values
-    df = pd.DataFrame(rows, columns=header)
+    raw_header = values[0]
+    rows = values[1:]
 
+    # Header "limpo": garante string, remove None, e evita header vazio
+    header = []
+    for i, h in enumerate(raw_header):
+        h = "" if h is None else str(h).strip()
+        if not h:
+            h = f"__col_{i+1}"
+        header.append(h)
+
+    # Se o header tiver duplicados, renomeia com sufixo
+    seen = {}
+    fixed_header = []
+    for h in header:
+        if h not in seen:
+            seen[h] = 1
+            fixed_header.append(h)
+        else:
+            seen[h] += 1
+            fixed_header.append(f"{h}_{seen[h]}")
+    header = fixed_header
+
+    ncols = len(header)
+
+    # Normaliza cada linha para ter exatamente ncols colunas
+    norm_rows = []
+    for r in rows:
+        if r is None:
+            r = []
+        # garante lista
+        if not isinstance(r, list):
+            r = [r]
+
+        if len(r) < ncols:
+            r = r + [""] * (ncols - len(r))
+        elif len(r) > ncols:
+            r = r[:ncols]
+
+        norm_rows.append(r)
+
+    df = pd.DataFrame(norm_rows, columns=header)
+
+    # Converte colunas de data (quando existirem)
     date_cols = ["Cleaning Date", "Check-In Date", "Check-Out Date", "Next Arrival"]
     for c in date_cols:
         if c in df.columns:
             df[c] = pd.to_datetime(df[c], errors="coerce", dayfirst=True)
 
     return df
+
 
 
 def write_df_to_sheet(df: pd.DataFrame, sheet_id: str, tab_name: str):
