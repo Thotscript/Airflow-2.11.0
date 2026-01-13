@@ -892,14 +892,33 @@ def fazer_upload(page, cliente: str, caminho_arquivo: str, qtd_linhas: int):
         except Exception:
             pass
 
+    def collect_alerts():
+        loc = page.locator(".alert, .alert-danger, .alert-warning, .alert-success, .text-danger, .has-error")
+        msgs = []
+        for i in range(min(loc.count(), 15)):
+            try:
+                t = loc.nth(i).inner_text().strip()
+                if t:
+                    msgs.append(t)
+            except Exception:
+                continue
+        return msgs
+
     try:
         print("[ALOHA][UPLOAD] URL atual (antes de abrir modal):", page.url)
+
+        # Garante que estamos na tela de Orders
         if "/orders" not in page.url:
             page.goto(ALOHA_ORDERS_URL, wait_until="domcontentloaded", timeout=60000)
 
+        # Fecha modal antigo, se existir
         close_modal_if_open()
+
+        # Abre modal "Add Orders"
         page.wait_for_selector("a[data-click='NewOrderUploads']", timeout=60000)
         page.click("a[data-click='NewOrderUploads']")
+
+        # Espera form do modal
         page.wait_for_selector("#OrderUploadAddForm", timeout=30000)
 
         modal = page.locator(".modal-content").first
@@ -908,19 +927,23 @@ def fazer_upload(page, cliente: str, caminho_arquivo: str, qtd_linhas: int):
         inp_file = modal.locator("#OrderUploadFile")
         btn_continue = modal.locator("button[type='submit']")
 
-        sel_company.wait_for(state="visible")
-        inp_rows.wait_for(state="visible")
-        inp_file.wait_for(state="visible")
+        sel_company.wait_for(state="visible", timeout=30000)
+        inp_rows.wait_for(state="visible", timeout=30000)
+        inp_file.wait_for(state="visible", timeout=30000)
 
+        # Preenche
         sel_company.select_option(label=cliente)
         inp_rows.fill(str(int(qtd_linhas)))
         inp_file.set_input_files(caminho_arquivo)
 
-        # Dispara eventos de validação
-        sel_company.dispatch_event("change")
-        inp_rows.dispatch_event("input")
-        inp_rows.dispatch_event("change")
-        inp_file.dispatch_event("change")
+        # Dispara eventos de validação (JS)
+        try:
+            sel_company.dispatch_event("change")
+            inp_rows.dispatch_event("input")
+            inp_rows.dispatch_event("change")
+            inp_file.dispatch_event("change")
+        except Exception:
+            pass
 
         # Aguarda arquivo estar setado
         page.wait_for_function(
@@ -931,46 +954,53 @@ def fazer_upload(page, cliente: str, caminho_arquivo: str, qtd_linhas: int):
             timeout=30000,
         )
 
-        # Força o clique no continue (sem esperar habilitar)
+        # Clica continue (forçado)
         print("[ALOHA][UPLOAD] clicando em continue...")
         btn_continue.click(force=True)
 
-        # Fecha modal se ele sumir
+        # Opcional: aguarda modal sumir (não é obrigatório, mas ajuda)
         try:
-            modal.wait_for(state="hidden", timeout=15000)
-            print("[ALOHA][UPLOAD] modal fechado, aguardando processamento...")
+            modal.wait_for(state="hidden", timeout=20000)
+            print("[ALOHA][UPLOAD] modal fechado.")
         except Exception:
-            print("[ALOHA][UPLOAD] modal ainda visível (ajax interno), aguardando resultado...")
+            print("[ALOHA][UPLOAD] modal não fechou (ajax interno).")
 
-        # Aguarda resultado do upload
-        page.wait_for_selector(
-            "button:has-text('Importar'), button:has-text('Import'), table, .alert",
-            timeout=90000,
-        )
+        # Aguarda cair na tela do upload criado (ex.: /order_uploads/edit/1354)
+        try:
+            page.wait_for_url("**/order_uploads/edit/**", timeout=90000)
+            print("[ALOHA][UPLOAD] Upload criado:", page.url)
+        except Exception:
+            dump_debug("no_edit_page")
+            log_message += f"Upload para {cliente}: não chegou na página /order_uploads/edit.\n"
+            return casas_nao_cadastradas, log_message
 
-        # Tenta achar o botão importar (se existir)
-        btn_importar = page.locator("button:has-text('Importar'), button:has-text('Import')")
+        # Coleta mensagens de tela (erro/aviso/sucesso)
+        alerts = collect_alerts()
+        if alerts:
+            print("[ALOHA][UPLOAD] mensagens:", " | ".join(alerts))
 
-        if btn_importar.count() > 0:
-            btn_importar.first.click()
-            log_message += f"Upload para o cliente {cliente} realizado com sucesso!\n"
-        else:
-            # Nenhum botão: pode ser sucesso automático ou mensagem
-            alerts = page.locator(".alert, .alert-success, .alert-warning, .alert-danger")
-            if alerts.count() > 0:
-                msgs = [alerts.nth(i).inner_text().strip() for i in range(alerts.count())]
-                log_message += f"Upload concluído (sem botão Importar). Mensagens: {' | '.join(msgs)}\n"
-            else:
-                log_message += f"Upload concluído para {cliente}, sem necessidade de Importar.\n"
+        # Se tiver alerta de erro, considera falha
+        if any(("error" in a.lower()) or ("invalid" in a.lower()) or ("failed" in a.lower()) for a in alerts):
+            dump_debug("upload_error_alert")
+            log_message += f"Upload para {cliente} falhou. Mensagens: {' | '.join(alerts)}\n"
+            return casas_nao_cadastradas, log_message
 
-        close_modal_if_open()
+        # Tenta coletar “casas não cadastradas” (se aparecerem nessa página)
+        try:
+            casas_elements = page.query_selector_all("div.row div.col-md-3 small")
+            casas_nao_cadastradas = [c.inner_text().strip() for c in casas_elements if c.inner_text().strip()]
+        except Exception:
+            casas_nao_cadastradas = []
+
+        log_message += f"Upload para o cliente {cliente} realizado com sucesso (sem etapa Importar).\n"
+        return casas_nao_cadastradas, log_message
 
     except Exception as e:
         dump_debug("exception")
         print(f"[ALOHA][UPLOAD] ERRO cliente={cliente} | url={page.url} | erro={repr(e)}")
         log_message += f"Ocorreu um erro durante o upload para {cliente}. Erro: {e}\n"
+        return casas_nao_cadastradas, log_message
 
-    return casas_nao_cadastradas, log_message
 
 
 
