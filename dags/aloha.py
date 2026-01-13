@@ -886,11 +886,34 @@ def fazer_upload(page, cliente: str, caminho_arquivo: str, qtd_linhas: int):
         page.wait_for_selector("a[data-click='NewOrderUploads']", timeout=60000)
         page.click("a[data-click='NewOrderUploads']")
 
+        # Espera redirecionar para a página correta de upload
+        page.wait_for_load_state("domcontentloaded", timeout=60000)
+        try:
+            page.wait_for_url("**/orders/uploads**", timeout=10000)
+        except Exception:
+            # Se não redirecionou, verifica se login caiu ou modal bloqueou
+            print("[ALOHA][UPLOAD] Aviso: não redirecionou para /orders/uploads, verificando sessão/modal...")
+            # Se login expirou:
+            if "login" in page.url.lower():
+                print("[ALOHA][UPLOAD] Sessão expirada — tentando novo login.")
+                aloha_login(page)
+                page.click("a[data-click='NewOrderUploads']")
+                page.wait_for_url("**/orders/uploads**", timeout=10000)
+            else:
+                # tenta fechar modal (caso SweetAlert)
+                page.evaluate("""() => {
+                    const btn = document.querySelector('.sweet-alert button.confirm');
+                    if (btn) btn.click();
+                }""")
+                time.sleep(2)
+
+
         page.wait_for_selector("#OrderUploadCompanyId", timeout=60000)
         page.select_option("#OrderUploadCompanyId", label=cliente)
 
         page.fill("#OrderUploadMaxRows", str(qtd_linhas))
 
+        print("[ALOHA][UPLOAD] URL atual:", page.url)
         # upload arquivo
         page.set_input_files("#OrderUploadFile", caminho_arquivo)
 
