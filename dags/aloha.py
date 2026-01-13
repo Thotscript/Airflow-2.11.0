@@ -36,7 +36,8 @@ import pandas as pd
 import requests
 from requests.adapters import HTTPAdapter, Retry
 
-from sqlalchemy import create_engine, URL
+from sqlalchemy import create_engine
+from sqlalchemy.engine import URL
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
