@@ -833,13 +833,13 @@ def aloha_apply_changes(df_changes: pd.DataFrame):
                 dt = pd.to_datetime(row["Next Arrival_atual"], errors="coerce")
                 if pd.notna(dt):
                     # formato esperado: ddmmyyyy (como seu fluxo antigo)
-                    page.fill("#OrderDtNextCheckinGuest", dt.strftime("%d%m%Y"))
+                    page.fill("#OrderDtNextCheckinGuest", dt.strftime("%Y-%m-%d"))
 
             # Atualiza Cleaning Date
             if row["Cleaning Date_atual"] != row["Cleaning Date_anterior"]:
                 dt = pd.to_datetime(row["Cleaning Date_atual"], errors="coerce")
                 if pd.notna(dt):
-                    page.fill("#OrderDtCheckoutGuest", dt.strftime("%d%m%Y"))
+                    page.fill("#OrderDtCheckoutGuest", dt.strftime("%Y-%m-%d"))
 
             page.click("//button[@type='submit' and contains(@class,'btn-primary')]")
             print(f"Reserva {reserva} atualizada")
