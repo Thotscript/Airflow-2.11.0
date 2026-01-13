@@ -36,7 +36,7 @@ import pandas as pd
 import requests
 from requests.adapters import HTTPAdapter, Retry
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, URL
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
@@ -366,13 +366,15 @@ def integrate_flags(property_list_wordpress: pd.DataFrame) -> pd.DataFrame:
 # MySQL enrich
 # =========================
 def build_mysql_engine():
-    conn_str = (
-        f"mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}"
-        f"@{MYSQL_HOST}/{MYSQL_DATABASE}"
-        "?charset=utf8mb4"
+    url = URL.create(
+        drivername="mysql+pymysql",
+        username=MYSQL_USER,
+        password=MYSQL_PASSWORD,   # pode ter @, !, etc.
+        host=MYSQL_HOST,
+        database=MYSQL_DATABASE,
+        query={"charset": "utf8mb4"},
     )
-    return create_engine(conn_str)
-
+    return create_engine(url, pool_pre_ping=True, pool_recycle=3600)
 
 def enrich_with_mysql(merged_df: pd.DataFrame) -> pd.DataFrame:
     engine = build_mysql_engine()
