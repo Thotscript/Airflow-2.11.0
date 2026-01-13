@@ -1,21 +1,24 @@
 # -*- coding: utf-8 -*-
 """
-ALOHA PIPELINE (SINGLE FILE) — Airflow-ready
+ALOHA PIPELINE (SINGLE FILE) — Airflow-ready (Playwright only, no Selenium)
 - Lê Aloha (atual) e Aloha_last (snapshot) de Google Sheets (aba: "Página1")
-- Sobrescreve Aloha_last com o conteúdo anterior de Aloha (equivalente ao shutil.copy)
+- Sobrescreve Aloha_last com o conteúdo anterior de Aloha (snapshot)
 - Consome Streamline (GetHousekeepingCleaningReport) com HTTP resiliente (Retry)
-- Processa flags, enriquece com SQL Server (mesma lógica), monta final_df
-- Gera Excel local /tmp/Aloha_upload.xlsx para o upload via Selenium
+- Processa flags, enriquece com MySQL, monta final_df
+- Gera Excel local /tmp/Aloha.xlsx e /tmp/Aloha_upload.xlsx (para upload no Aloha via Playwright)
 - Compara atual vs anterior e:
     - atualiza datas (Next Arrival / Cleaning Date) no Aloha Smart Services
     - remove reservas canceladas
 - Faz upload para ONE VACATION e SNOW BIRD
-- Envia e-mail via Gmail API (mesmo padrão de token salvo)
+- Envia e-mail via Gmail API
 - Inclui DAG do Airflow no final
 
-OBS:
-- Você pediu tokens inline e variáveis no topo: está tudo aqui.
-- Recomendação de segurança: não versionar este arquivo com senhas/tokens em plaintext.
+IMPORTANTE (Airflow):
+- SEM login interativo OAuth. Tokens precisam existir no disco:
+  - Sheets token:  /opt/airflow/dags/Tokens/sheets_token.json
+  - Gmail token:   /opt/airflow/dags/Tokens/token.json
+  - Credentials:   /opt/airflow/dags/Tokens/credentials.json (cliente OAuth)
+- Se der "invalid_scope": token foi gerado com scopes diferentes. Gere novamente fora do Airflow.
 """
 
 # =============================
@@ -23,108 +26,93 @@ OBS:
 # =============================
 import os
 import re
-import json
 import base64
 import time
+from datetime import datetime, timedelta, date
+from typing import List, Tuple, Optional
+
 import numpy as np
 import pandas as pd
 import requests
-from datetime import datetime, timedelta, date
-
 from requests.adapters import HTTPAdapter, Retry
 
-# SQL Server
 from sqlalchemy import create_engine
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
-# Gmail / Google OAuth
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
 
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from google.auth.exceptions import RefreshError
 
-# Airflow
 import pendulum
 from airflow import DAG
 from airflow.decorators import task
 
 
 # ==========================
-# CONFIGURAÇÕES INLINE (TOPO)
+# CONFIGURAÇÕES
 # ==========================
-
-# --- TIMEZONE ---
 SP_TZ = pendulum.timezone("America/Sao_Paulo")
 
-# --- STREAMLINE ---
+# --- Streamline ---
 STREAMLINE_URL = "https://web.streamlinevrs.com/api/json"
 STREAMLINE_TOKEN_KEY = "3ef223d3bbf7086cfb86df7e98d6e5d2"
 STREAMLINE_TOKEN_SECRET = "a88d05b895affb815cc8a4d96670698ee486ea30"
 STREAMLINE_HEADERS = {"Content-Type": "application/json"}
 
-# Janela dinâmica (mesma regra do seu código)
 REPORT_START_DAYS_BACK = 5
 REPORT_END_DAYS_FORWARD = 85
 
-# --- GOOGLE (Sheets + Gmail) ---
-# Sheets
-SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+# --- Google OAuth ---
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # /opt/airflow/dags
+TOKENS_DIR = os.path.join(BASE_DIR, "Tokens")
+CREDENTIALS_FILE = os.path.join(TOKENS_DIR, "credentials.json")  # mantido (útil p/ re-gerar token fora do Airflow)
 
-# Gmail
+# Sheets (MESMO padrão do WorkOrders)
+SHEETS_SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
+SHEETS_TOKEN_FILE = os.path.join(TOKENS_DIR, "sheets_token.json")
+
+# Gmail (MESMO token que já funciona)
 GMAIL_SCOPES = [
     "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/gmail.send",
 ]
+GMAIL_TOKEN_FILE = os.path.join(TOKENS_DIR, "token.json")
 GMAIL_USER_ID = "me"
 
-# Pastas/arquivos de credenciais (mesmo padrão do seu exemplo)
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # /opt/airflow/dags
-TOKENS_DIR = os.path.join(BASE_DIR, "Tokens")
-
-GOOGLE_CREDENTIALS_FILE = os.path.join(TOKENS_DIR, "credentials.json")
-GOOGLE_TOKEN_FILE = os.path.join(TOKENS_DIR, "token.json")
-
-GMAIL_CREDENTIALS_FILE = os.path.join(TOKENS_DIR, "credentials.json")
-GMAIL_TOKEN_FILE = os.path.join(TOKENS_DIR, "token.json")
-
-# --- GOOGLE SHEETS IDs (VOCÊ VAI PREENCHER) ---
-# ALOHA (ATUAL) e ALOHA_LAST (SNAPSHOT)
+# --- Sheets IDs ---
 SHEET_ID_ALOHA_ATUAL = "1pUpX9_zCQSYys8SUN7f52TK857ocJrphKVfbgtka5k8"
 SHEET_ID_ALOHA_LAST = "1G6e4g3ZG4bH66kCqjihmX2yTX-kkojxunFffKRAEKgY"
-
-# Aba padrão genérica
 SHEET_TAB_NAME = "Página1"
 
-# --- ALOHA SMART SERVICES (LOGIN) ---
+# --- Aloha ---
 ALOHA_LOGIN_URL = "https://www.alohasmartservices.com/users/login"
 ALOHA_ORDERS_URL = "https://www.alohasmartservices.com/orders"
-
 ALOHA_EMAIL = "mkj2508@gmail.com"
 ALOHA_SENHA = "250909"
 
-# --- EXCEL LOCAL (necessário para upload via Selenium file_input.send_keys) ---
+# --- Excel ---
 EXCEL_FULL_LOCAL = "/tmp/Aloha.xlsx"
 EXCEL_UPLOAD_LOCAL = "/tmp/Aloha_upload.xlsx"
 
-# --- CLIENTES DO UPLOAD ---
 CLIENT_ONE = "ONE VACATION"
 CLIENT_SNOW = "SNOW BIRD"
 
-# =========================
-# MYSQL (somente leitura)
-# =========================
+# --- MySQL ---
 MYSQL_HOST = "host.docker.internal"
 MYSQL_USER = "root"
 MYSQL_PASSWORD = "Tfl1234@"
 MYSQL_DATABASE = "ovh_silver"
 
-# --- SERVICE NAME RULES ---
+# --- Service name rules ---
 SERVICE_NAME_DEFAULT = "CHECK OUT - EXTERNAL LAUNDRY"
 UNITS_NO_LAUNDRY = [
     "9312 SH - Champions Gate - Unique High end 8 Beds (8br/5ba)",
@@ -132,19 +120,57 @@ UNITS_NO_LAUNDRY = [
 ]
 SERVICE_NAME_NO_LAUNDRY = "CHECK OUT - NO LAUNDRY"
 
-# --- E-MAIL (ENVIO) ---
+# --- Email ---
 EMAIL_SENDER = "revenue@onevacationhome.com"
 EMAIL_RECIPIENTS = ["revenue@onevacationhome.com", "keitianne@onevacationhome.com"]
 EMAIL_SUBJECT = "Upload Aloha"
 
-# --- DAG AIRFLOW ---
+# --- DAG ---
 DAG_ID = "ALOHA_PIPELINE"
-DAG_SCHEDULE = "0 7 * * *"  # ajuste como quiser
+DAG_SCHEDULE = "0 7 * * *"
 DAG_START_DATE = pendulum.datetime(2025, 9, 23, 8, 0, tz=SP_TZ)
 
 
+# ==========================
+# GOOGLE AUTH (SEM LOGIN INTERATIVO)
+# ==========================
+def load_credentials(token_file: str, scopes: List[str]) -> Credentials:
+    if not os.path.exists(token_file):
+        raise RuntimeError(f"Token não encontrado: {token_file}")
+
+    creds = Credentials.from_authorized_user_file(token_file, scopes)
+
+    # Se expirado, tenta refresh
+    if creds and creds.expired and creds.refresh_token:
+        try:
+            creds.refresh(Request())
+            with open(token_file, "w") as f:
+                f.write(creds.to_json())
+        except RefreshError as e:
+            raise RuntimeError(
+                f"Falha ao dar refresh no token {token_file}. "
+                f"Provável scopes divergentes do token. Erro: {repr(e)}"
+            )
+
+    if not creds or not creds.valid:
+        raise RuntimeError(
+            f"Credenciais inválidas para {token_file}. "
+            "Recrie o token fora do Airflow com os scopes corretos."
+        )
+
+    return creds
+
+
+def get_sheets_service():
+    return build("sheets", "v4", credentials=load_credentials(SHEETS_TOKEN_FILE, SHEETS_SCOPES))
+
+
+def get_gmail_service():
+    return build("gmail", "v1", credentials=load_credentials(GMAIL_TOKEN_FILE, GMAIL_SCOPES))
+
+
 # =========================
-# HTTP resiliente (EXATAMENTE o padrão que você passou)
+# HTTP resiliente (Retry)
 # =========================
 def build_session():
     s = requests.Session()
@@ -163,70 +189,11 @@ def build_session():
 
 
 # =========================
-# GOOGLE AUTH (mesmo padrão do seu exemplo)
-# =========================
-def _do_interactive_login(credentials_file: str, scopes: list[str], token_file: str) -> Credentials:
-    flow = InstalledAppFlow.from_client_secrets_file(credentials_file, scopes)
-    creds = flow.run_local_server(port=0, access_type="offline", prompt="consent")
-    os.makedirs(os.path.dirname(token_file), exist_ok=True)
-    with open(token_file, "w") as f:
-        f.write(creds.to_json())
-    return creds
-
-
-def get_credentials(credentials_file: str, scopes: list[str], token_file: str) -> Credentials:
-    creds = None
-
-    if os.path.exists(token_file):
-        try:
-            creds = Credentials.from_authorized_user_file(token_file, scopes)
-        except Exception:
-            try:
-                os.remove(token_file)
-            except Exception:
-                pass
-            creds = None
-
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            try:
-                creds.refresh(Request())
-                with open(token_file, "w") as f:
-                    f.write(creds.to_json())
-                return creds
-            except RefreshError:
-                if os.path.exists(token_file):
-                    try:
-                        os.remove(token_file)
-                    except Exception:
-                        pass
-                return _do_interactive_login(credentials_file, scopes, token_file)
-        else:
-            return _do_interactive_login(credentials_file, scopes, token_file)
-
-    return creds
-
-
-def get_sheets_service():
-    creds = get_credentials(GOOGLE_CREDENTIALS_FILE, SHEETS_SCOPES, GOOGLE_TOKEN_FILE)
-    return build("sheets", "v4", credentials=creds)
-
-
-def get_gmail_service():
-    creds = get_credentials(GMAIL_CREDENTIALS_FILE, GMAIL_SCOPES, GMAIL_TOKEN_FILE)
-    return build("gmail", "v1", credentials=creds)
-
-
-# =========================
 # GOOGLE SHEETS: READ / WRITE
 # =========================
 def read_sheet_as_df(sheet_id: str, tab_name: str) -> pd.DataFrame:
     service = get_sheets_service()
-    resp = service.spreadsheets().values().get(
-        spreadsheetId=sheet_id,
-        range=tab_name,
-    ).execute()
-
+    resp = service.spreadsheets().values().get(spreadsheetId=sheet_id, range=tab_name).execute()
     values = resp.get("values", [])
     if not values:
         return pd.DataFrame()
@@ -234,8 +201,6 @@ def read_sheet_as_df(sheet_id: str, tab_name: str) -> pd.DataFrame:
     header, *rows = values
     df = pd.DataFrame(rows, columns=header)
 
-    # tenta converter colunas que parecem datas (mesma ideia do read_excel)
-    # o diff depende de datas como Timestamp
     date_cols = ["Cleaning Date", "Check-In Date", "Check-Out Date", "Next Arrival"]
     for c in date_cols:
         if c in df.columns:
@@ -247,7 +212,6 @@ def read_sheet_as_df(sheet_id: str, tab_name: str) -> pd.DataFrame:
 def write_df_to_sheet(df: pd.DataFrame, sheet_id: str, tab_name: str):
     service = get_sheets_service()
 
-    # transforma para strings (Sheets é textual); datas vão como dd/mm/yyyy para ficar legível
     df_out = df.copy()
     for c in ["Cleaning Date", "Check-In Date", "Check-Out Date", "Next Arrival"]:
         if c in df_out.columns:
@@ -255,12 +219,7 @@ def write_df_to_sheet(df: pd.DataFrame, sheet_id: str, tab_name: str):
 
     values = [df_out.columns.tolist()] + df_out.fillna("").astype(str).values.tolist()
 
-    # clear e update (sobrescreve inteiro)
-    service.spreadsheets().values().clear(
-        spreadsheetId=sheet_id,
-        range=tab_name,
-    ).execute()
-
+    service.spreadsheets().values().clear(spreadsheetId=sheet_id, range=tab_name).execute()
     service.spreadsheets().values().update(
         spreadsheetId=sheet_id,
         range=tab_name,
@@ -270,7 +229,7 @@ def write_df_to_sheet(df: pd.DataFrame, sheet_id: str, tab_name: str):
 
 
 # =========================
-# STREAMLINE: GetHousekeepingCleaningReport (com session resiliente)
+# STREAMLINE: GetHousekeepingCleaningReport
 # =========================
 def fetch_housekeeping_cleaning_report(session: requests.Session) -> dict:
     start_date = (date.today() - timedelta(days=REPORT_START_DAYS_BACK)).strftime("%m/%d/%Y")
@@ -293,7 +252,6 @@ def fetch_housekeeping_cleaning_report(session: requests.Session) -> dict:
         timeout=(10, 40),
     )
 
-    # log leve (similar ao seu exemplo)
     print("Streamline resposta:", resp.status_code, (resp.text[:500] if resp.text else ""))
 
     try:
@@ -313,7 +271,7 @@ def fetch_housekeeping_cleaning_report(session: requests.Session) -> dict:
 
 
 # =========================
-# FLAGS: mesma lógica do seu código
+# FLAGS: mesma lógica
 # =========================
 def integrate_flags(property_list_wordpress: pd.DataFrame) -> pd.DataFrame:
     col_flags = "flags.flag"
@@ -358,7 +316,7 @@ def integrate_flags(property_list_wordpress: pd.DataFrame) -> pd.DataFrame:
 
 
 # =========================
-# SQL Server enrich: mesma lógica do seu código
+# MySQL enrich
 # =========================
 def build_mysql_engine():
     conn_str = (
@@ -372,7 +330,6 @@ def build_mysql_engine():
 def enrich_with_mysql(merged_df: pd.DataFrame) -> pd.DataFrame:
     engine = build_mysql_engine()
 
-    # ---- tb_reservas (antes: tb_reservas_full) ----
     df_type = pd.read_sql_query(
         """
         SELECT
@@ -382,10 +339,8 @@ def enrich_with_mysql(merged_df: pd.DataFrame) -> pd.DataFrame:
         """,
         engine,
     )
-
     merged_df = merged_df.merge(df_type, on="confirmation_id", how="left")
 
-    # ---- tb_property_list_wordpress + tb_non_renting ----
     df_conc = pd.read_sql_query(
         """
         SELECT
@@ -403,19 +358,13 @@ def enrich_with_mysql(merged_df: pd.DataFrame) -> pd.DataFrame:
         engine,
     )
 
-    merged_df = merged_df.merge(
-        df_conc,
-        left_on="unit_id",
-        right_on="id_house",
-        how="left",
-    )
+    merged_df = merged_df.merge(df_conc, left_on="unit_id", right_on="id_house", how="left")
 
     merged_df["Unit"] = merged_df.apply(
-        lambda row: f"{row['unit_name']} ({row['conc']})",
+        lambda row: f"{row.get('unit_name','')} ({row.get('conc','')})".strip(),
         axis=1,
     )
 
-    # ---- correções específicas (mantidas iguais) ----
     merged_df["Unit"] = merged_df["Unit"].replace(
         r"412 OC  \- 5BR Home Bliss: Private Pool - Sleeps 12 \(5br/4ba\)",
         "412 OC 5BR Home Bliss Private Pool Sleeps 12 (5br/4ba)",
@@ -432,7 +381,7 @@ def enrich_with_mysql(merged_df: pd.DataFrame) -> pd.DataFrame:
 
 
 # =========================
-# Montagem final_df (mesma lógica)
+# Montagem final_df
 # =========================
 def build_final_df(merged_df: pd.DataFrame) -> pd.DataFrame:
     merged_df["Service name"] = SERVICE_NAME_DEFAULT
@@ -464,41 +413,54 @@ def build_final_df(merged_df: pd.DataFrame) -> pd.DataFrame:
         else:
             final_df[final_col] = ""
 
-    # datas como datetime (sem strftime)
     date_columns = ["Cleaning Date", "Check-In Date", "Check-Out Date", "Next Arrival"]
     for col in date_columns:
-        final_df[col] = pd.to_datetime(final_df[col], format="%m/%d/%Y", errors="coerce")
+        final_df[col] = pd.to_datetime(final_df[col], errors="coerce")
 
-    # regra NO LAUNDRY
     final_df.loc[final_df["Unit"].isin(UNITS_NO_LAUNDRY), "Service name"] = SERVICE_NAME_NO_LAUNDRY
+
     return final_df
 
 
-def write_excels_local(final_df: pd.DataFrame):
-    # full
-    with pd.ExcelWriter(EXCEL_FULL_LOCAL, engine="xlsxwriter", date_format="dd/mm/yyyy", datetime_format="dd/mm/yyyy") as w:
+def write_excels_local(final_df: pd.DataFrame) -> pd.DataFrame:
+    # salva full
+    with pd.ExcelWriter(
+        EXCEL_FULL_LOCAL,
+        engine="xlsxwriter",
+        date_format="dd/mm/yyyy",
+        datetime_format="dd/mm/yyyy",
+    ) as w:
         final_df.to_excel(w, sheet_name="Reservas", index=False)
 
-    # upload filtrado (Cleaning Date >= hoje)
+    # salva upload (Cleaning Date >= hoje)
     today = datetime.today().replace(hour=0, minute=0, second=0, microsecond=0)
-    filtered_df = final_df[final_df["Cleaning Date"] >= today]
-    with pd.ExcelWriter(EXCEL_UPLOAD_LOCAL, engine="xlsxwriter", date_format="dd/mm/yyyy", datetime_format="dd/mm/yyyy") as w:
+    filtered_df = final_df[final_df["Cleaning Date"] >= today].copy()
+
+    with pd.ExcelWriter(
+        EXCEL_UPLOAD_LOCAL,
+        engine="xlsxwriter",
+        date_format="dd/mm/yyyy",
+        datetime_format="dd/mm/yyyy",
+    ) as w:
         filtered_df.to_excel(w, sheet_name="Reservas", index=False)
 
     return filtered_df
 
 
 # =========================
-# DIFF (mesma lógica do seu merge/condições)
+# DIFF (comparação atual vs anterior)
 # =========================
-def compute_changes(df_atual: pd.DataFrame, df_anterior: pd.DataFrame) -> tuple[pd.DataFrame, str]:
-    # garante colunas
+def compute_changes(df_atual: pd.DataFrame, df_anterior: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
     if df_atual.empty:
         df_atual = pd.DataFrame(columns=df_anterior.columns)
     if df_anterior.empty:
         df_anterior = pd.DataFrame(columns=df_atual.columns)
 
-    # merge pelo Reservation #
+    if "Reservation #" not in df_atual.columns:
+        df_atual["Reservation #"] = pd.NA
+    if "Reservation #" not in df_anterior.columns:
+        df_anterior["Reservation #"] = pd.NA
+
     df_merged = pd.merge(df_atual, df_anterior, on="Reservation #", suffixes=("_atual", "_anterior"))
 
     colunas_datas = [
@@ -512,7 +474,6 @@ def compute_changes(df_atual: pd.DataFrame, df_anterior: pd.DataFrame) -> tuple[
             df_merged[col] = pd.NaT
         df_merged[col] = pd.to_datetime(df_merged[col], errors="coerce").fillna(pd.Timestamp(0))
 
-    # Unit pode estar vazio
     df_merged["Unit_atual"] = df_merged.get("Unit_atual", "").fillna("")
     df_merged["Unit_anterior"] = df_merged.get("Unit_anterior", "").fillna("")
 
@@ -527,7 +488,7 @@ def compute_changes(df_atual: pd.DataFrame, df_anterior: pd.DataFrame) -> tuple[
         & (df_merged["Cleaning Date_atual"] >= hoje)
     )
 
-    df_alterados = df_merged.loc[condicao]
+    df_alterados = df_merged.loc[condicao].copy()
 
     colunas_selecionadas = [
         "Reservation #",
@@ -539,8 +500,7 @@ def compute_changes(df_atual: pd.DataFrame, df_anterior: pd.DataFrame) -> tuple[
     ]
     df_alterados = df_alterados[colunas_selecionadas]
 
-    # canceladas (sumiram do atual)
-    reservas_exclusivas = df_anterior[~df_anterior["Reservation #"].isin(df_atual["Reservation #"])]
+    reservas_exclusivas = df_anterior[~df_anterior["Reservation #"].isin(df_atual["Reservation #"])].copy()
     reservas_exclusivas = reservas_exclusivas[pd.to_datetime(reservas_exclusivas["Cleaning Date"], errors="coerce") > hoje]
 
     reservas_exclusivas = reservas_exclusivas.rename(columns={
@@ -550,6 +510,7 @@ def compute_changes(df_atual: pd.DataFrame, df_anterior: pd.DataFrame) -> tuple[
         "Cleaning Date": "Cleaning Date_anterior",
         "Unit": "Unit_anterior",
     })
+
     for col in [
         "Check-In Date_atual", "Check-Out Date_atual",
         "Next Arrival_atual", "Cleaning Date_atual",
@@ -568,7 +529,6 @@ def compute_changes(df_atual: pd.DataFrame, df_anterior: pd.DataFrame) -> tuple[
 
     df_final = pd.concat([df_alterados, reservas_exclusivas], ignore_index=True)
 
-    # mensagens
     mensagens = []
     for _, row in df_final.iterrows():
         res_num = row["Reservation #"]
@@ -578,13 +538,25 @@ def compute_changes(df_atual: pd.DataFrame, df_anterior: pd.DataFrame) -> tuple[
             alteracoes = []
 
             if row["Check-In Date_atual"] != row["Check-In Date_anterior"]:
-                alteracoes.append(f"Check-In Date: de {row['Check-In Date_anterior'].date()} para {row['Check-In Date_atual'].date()}")
+                alteracoes.append(
+                    f"Check-In Date: de {pd.to_datetime(row['Check-In Date_anterior'], errors='coerce').date()} "
+                    f"para {pd.to_datetime(row['Check-In Date_atual'], errors='coerce').date()}"
+                )
             if row["Check-Out Date_atual"] != row["Check-Out Date_anterior"]:
-                alteracoes.append(f"Check-Out Date: de {row['Check-Out Date_anterior'].date()} para {row['Check-Out Date_atual'].date()}")
+                alteracoes.append(
+                    f"Check-Out Date: de {pd.to_datetime(row['Check-Out Date_anterior'], errors='coerce').date()} "
+                    f"para {pd.to_datetime(row['Check-Out Date_atual'], errors='coerce').date()}"
+                )
             if row["Next Arrival_atual"] != row["Next Arrival_anterior"]:
-                alteracoes.append(f"Next Arrival: de {row['Next Arrival_anterior'].date()} para {row['Next Arrival_atual'].date()}")
+                alteracoes.append(
+                    f"Next Arrival: de {pd.to_datetime(row['Next Arrival_anterior'], errors='coerce').date()} "
+                    f"para {pd.to_datetime(row['Next Arrival_atual'], errors='coerce').date()}"
+                )
             if row["Cleaning Date_atual"] != row["Cleaning Date_anterior"]:
-                alteracoes.append(f"Cleaning Date: de {row['Cleaning Date_anterior'].date()} para {row['Cleaning Date_atual'].date()}")
+                alteracoes.append(
+                    f"Cleaning Date: de {pd.to_datetime(row['Cleaning Date_anterior'], errors='coerce').date()} "
+                    f"para {pd.to_datetime(row['Cleaning Date_atual'], errors='coerce').date()}"
+                )
             if row["Unit_atual"] != row["Unit_anterior"]:
                 alteracoes.append(f"Unit: de '{row['Unit_anterior']}' para '{row['Unit_atual']}'")
 
@@ -595,8 +567,7 @@ def compute_changes(df_atual: pd.DataFrame, df_anterior: pd.DataFrame) -> tuple[
         else:
             cleaning_date = row["Cleaning Date_anterior"]
             msg = (
-                f"Reserva #{res_num} foi cancelada e excluída, "
-                f"pois não consta no arquivo atual. "
+                f"Reserva #{res_num} foi cancelada e excluída, pois não consta no arquivo atual. "
                 f"(Cleaning Date: {pd.to_datetime(cleaning_date, errors='coerce').date()}, "
                 f"Unit: '{row['Unit_anterior']}')"
             )
@@ -608,14 +579,12 @@ def compute_changes(df_atual: pd.DataFrame, df_anterior: pd.DataFrame) -> tuple[
 
 
 # =========================
-# SELENIUM: delete/update (mesma lógica)
+# PLAYWRIGHT HELPERS (Aloha)
 # =========================
-ARROW_LEFT = u"\ue012"
-ARROW_RIGHT = u"\ue014"
-HOME = u"\ue011"
-
-
 def build_browser():
+    """
+    Retorna (playwright, browser, context, page)
+    """
     playwright = sync_playwright().start()
     browser = playwright.chromium.launch(
         headless=True,
@@ -623,28 +592,26 @@ def build_browser():
     )
     context = browser.new_context(viewport={"width": 1920, "height": 1080})
     page = context.new_page()
-    return playwright, browser, page
+    return playwright, browser, context, page
 
 
 def aloha_login(page):
     page.goto(ALOHA_LOGIN_URL, timeout=60000)
-
     page.fill("#UserUsername", ALOHA_EMAIL)
     page.fill("#UserPassword", ALOHA_SENHA)
-
     page.click("//button[text()='Entrar']")
-
-    # garante login
     page.wait_for_selector("a[data-click='NewOrderUploads']", timeout=60000)
 
 
-
+# =========================
+# ALOHA: aplicar alterações/cancelamentos
+# =========================
 def aloha_apply_changes(df_changes: pd.DataFrame):
     if df_changes.empty:
         print("Sem alterações/cancelamentos.")
         return
 
-    playwright, browser, page = build_browser()
+    playwright, browser, context, page = build_browser()
 
     try:
         aloha_login(page)
@@ -655,8 +622,9 @@ def aloha_apply_changes(df_changes: pd.DataFrame):
 
             page.goto(ALOHA_ORDERS_URL, timeout=60000)
 
+            # limpa filtros e pesquisa
             page.click("a[href='/orders/index/clear']")
-            page.select_option("#filterFilter2", "1")
+            page.select_option("#filterFilter2", "1")  # Aguardando
             page.fill("#filterFilter5", reserva)
             page.click("//button[contains(., 'search')]")
 
@@ -671,19 +639,29 @@ def aloha_apply_changes(df_changes: pd.DataFrame):
                     print(f"Reserva {reserva} não encontrada")
                     continue
 
-                page.click("//a[@data-toggle='delete' and contains(., 'Delete')]")
+                # IMPORTANTE: registrar handler antes do clique que abre o dialog
                 page.once("dialog", lambda d: d.accept())
+                page.click("//a[@data-toggle='delete' and contains(., 'Delete')]")
                 print(f"Reserva {reserva} deletada")
+                time.sleep(1)
                 continue
 
-            # ALTERADA
-            page.click(f"//small[@data-original-title='{reserva}']")
+            # ALTERADA: abre edição
+            try:
+                page.click(f"//small[@data-original-title='{reserva}']", timeout=10000)
+                page.wait_for_selector("#OrderDtNextCheckinGuest", timeout=20000)
+            except PlaywrightTimeoutError:
+                print(f"Reserva {reserva} não encontrada para edição")
+                continue
 
+            # Atualiza Next Arrival
             if row["Next Arrival_atual"] != row["Next Arrival_anterior"]:
                 dt = pd.to_datetime(row["Next Arrival_atual"], errors="coerce")
                 if pd.notna(dt):
+                    # formato esperado: ddmmyyyy (como seu fluxo antigo)
                     page.fill("#OrderDtNextCheckinGuest", dt.strftime("%d%m%Y"))
 
+            # Atualiza Cleaning Date
             if row["Cleaning Date_atual"] != row["Cleaning Date_anterior"]:
                 dt = pd.to_datetime(row["Cleaning Date_atual"], errors="coerce")
                 if pd.notna(dt):
@@ -691,47 +669,58 @@ def aloha_apply_changes(df_changes: pd.DataFrame):
 
             page.click("//button[@type='submit' and contains(@class,'btn-primary')]")
             print(f"Reserva {reserva} atualizada")
+            time.sleep(1)
 
     finally:
-        browser.close()
-        playwright.stop()
+        try:
+            context.close()
+        except Exception:
+            pass
+        try:
+            browser.close()
+        except Exception:
+            pass
+        try:
+            playwright.stop()
+        except Exception:
+            pass
+
 
 # =========================
-# UPLOAD (mesma lógica)
+# ALOHA: upload + casas não cadastradas
 # =========================
-def fazer_upload(driver, wait, cliente: str, caminho_arquivo: str, qtd_linhas: int):
+def fazer_upload(page, cliente: str, caminho_arquivo: str, qtd_linhas: int):
     log_message = ""
-    casas_nao_cadastradas = []
+    casas_nao_cadastradas: List[str] = []
 
     try:
-        upload_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a[data-click='NewOrderUploads']")))
-        upload_btn.click()
+        page.wait_for_selector("a[data-click='NewOrderUploads']", timeout=30000)
+        page.click("a[data-click='NewOrderUploads']")
 
-        select_element = wait.until(EC.presence_of_element_located((By.ID, "OrderUploadCompanyId")))
-        select = Select(select_element)
-        select.select_by_visible_text(cliente)
+        page.wait_for_selector("#OrderUploadCompanyId", timeout=30000)
+        page.select_option("#OrderUploadCompanyId", label=cliente)
 
-        max_rows_input = driver.find_element(By.ID, "OrderUploadMaxRows")
-        max_rows_input.clear()
-        max_rows_input.send_keys(qtd_linhas)
+        page.fill("#OrderUploadMaxRows", str(qtd_linhas))
 
-        file_input = driver.find_element(By.ID, "OrderUploadFile")
+        # upload arquivo
         page.set_input_files("#OrderUploadFile", caminho_arquivo)
 
-        continue_btn = driver.find_element(By.XPATH, "//button[contains(., 'continue')]")
-        continue_btn.click()
-        time.sleep(10)
+        page.click("//button[contains(., 'continue')]")
+        time.sleep(8)
 
-        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div.panel-body")))
-        wait.until(EC.visibility_of_all_elements_located((By.CSS_SELECTOR, "div.row div.col-md-3 small")))
-        casas_elements = driver.find_elements(By.CSS_SELECTOR, "div.row div.col-md-3 small")
-        casas_nao_cadastradas = [c.text.strip() for c in casas_elements if c.text.strip()]
+        page.wait_for_selector("div.panel-body", timeout=60000)
 
-        try:
-            importar_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Importar')]")))
+        # casas não cadastradas aparecem nesses smalls
+        page.wait_for_selector("div.row div.col-md-3 small", timeout=60000)
+        casas_elements = page.query_selector_all("div.row div.col-md-3 small")
+        casas_nao_cadastradas = [c.inner_text().strip() for c in casas_elements if c.inner_text().strip()]
+
+        # tenta clicar Importar, se existir
+        importar_btn = page.query_selector("//button[contains(., 'Importar')]")
+        if importar_btn:
             importar_btn.click()
             log_message += f"Upload para o cliente {cliente} realizado com sucesso!\n"
-        except Exception:
+        else:
             log_message += f"Sem novas reservas para importar para o cliente {cliente}.\n"
 
     except Exception as e:
@@ -741,25 +730,26 @@ def fazer_upload(driver, wait, cliente: str, caminho_arquivo: str, qtd_linhas: i
 
 
 def aloha_upload_and_collect_missing():
-    driver = build_driver()
-    wait = WebDriverWait(driver, 10)
+    playwright, browser, context, page = build_browser()
 
     try:
-        aloha_login(driver, wait)
+        aloha_login(page)
 
-        # qtd linhas = linhas do "atual" + 50 (mesma lógica)
-        # aqui usamos o Excel local full para contar
-        qtd_linhas = pd.read_excel(EXCEL_FULL_LOCAL).shape[0] + 50
+        # qtd linhas = linhas do excel full + 50
+        try:
+            qtd_linhas = pd.read_excel(EXCEL_FULL_LOCAL).shape[0] + 50
+        except Exception:
+            qtd_linhas = 5000  # fallback
         print("qtd_linhas:", qtd_linhas)
 
         print("Iniciando upload para ONE VACATION...")
-        casas_one, log_one = fazer_upload(driver, wait, CLIENT_ONE, EXCEL_UPLOAD_LOCAL, qtd_linhas)
+        casas_one, log_one = fazer_upload(page, CLIENT_ONE, EXCEL_UPLOAD_LOCAL, qtd_linhas)
 
-        driver.get(ALOHA_ORDERS_URL)
-        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "a[data-click='NewOrderUploads']")))
+        page.goto(ALOHA_ORDERS_URL, timeout=60000)
+        page.wait_for_selector("a[data-click='NewOrderUploads']", timeout=60000)
 
         print("Iniciando upload para SNOW BIRD...")
-        casas_snow, log_snow = fazer_upload(driver, wait, CLIENT_SNOW, EXCEL_UPLOAD_LOCAL, qtd_linhas)
+        casas_snow, log_snow = fazer_upload(page, CLIENT_SNOW, EXCEL_UPLOAD_LOCAL, qtd_linhas)
 
         df_one = pd.DataFrame(casas_one, columns=["Casa"])
         df_snow = pd.DataFrame(casas_snow, columns=["Casa"])
@@ -774,21 +764,29 @@ def aloha_upload_and_collect_missing():
 
     finally:
         try:
-            driver.quit()
+            context.close()
+        except Exception:
+            pass
+        try:
+            browser.close()
+        except Exception:
+            pass
+        try:
+            playwright.stop()
         except Exception:
             pass
 
 
 # =========================
-# GMAIL: envio (mesmo padrão)
+# GMAIL: envio
 # =========================
 def send_custom_email_with_attachment(
     service,
     recipient,
     subject,
     message_html,
-    attachment_path=None,
-    sender=EMAIL_SENDER,
+    attachment_path: Optional[str] = None,
+    sender: str = EMAIL_SENDER,
 ):
     recipient_str = ", ".join(recipient) if isinstance(recipient, list) else recipient
 
@@ -813,23 +811,23 @@ def send_custom_email_with_attachment(
 
 
 # =========================
-# PIPELINE PRINCIPAL (ordem equivalente ao seu fluxo)
+# PIPELINE PRINCIPAL
 # =========================
 def pipeline_run():
-    # 0) Lê ALOHA atual e ALOHA last do Sheets
+    # 0) lê sheets atual e last
     df_aloha_atual_old = read_sheet_as_df(SHEET_ID_ALOHA_ATUAL, SHEET_TAB_NAME)
-    df_aloha_last_old = read_sheet_as_df(SHEET_ID_ALOHA_LAST, SHEET_TAB_NAME)
+    df_aloha_last_old = read_sheet_as_df(SHEET_ID_ALOHA_LAST, SHEET_TAB_NAME)  # mantido por compat
 
-    # 1) Snapshot: sobrescreve ALOHA_LAST com o que estava no ALOHA atual (equivalente ao shutil.copy)
-    #    (você pediu: "aloha_last é sempre sobescrita")
+    # 1) snapshot: sobrescreve ALOHA_LAST com o antigo ALOHA atual
     write_df_to_sheet(df_aloha_atual_old, SHEET_ID_ALOHA_LAST, SHEET_TAB_NAME)
     print("ALOHA_LAST sobrescrita com snapshot do ALOHA atual (pré-atualização).")
 
-    # 2) Streamline (com Retry/Rate limit do exemplo)
+    # 2) Streamline
     session = build_session()
     payload = fetch_housekeeping_cleaning_report(session)
 
-    # 3) Normaliza JSON em DataFrame (mesma lógica)
+    # 3) normaliza JSON em DataFrame
+    # cuidado: se estrutura vier diferente, estoura KeyError -> preferível falhar e ver log
     property_list_wordpress = pd.json_normalize(
         payload["data"],
         record_path=["reservations", "reservation"],
@@ -838,34 +836,36 @@ def pipeline_run():
         max_level=1,
     )
 
-    # 4) Flags (mesma lógica)
+    # 4) flags
     merged_df = integrate_flags(property_list_wordpress)
 
-    # 5) Enriquecimento SQL Server (mesma lógica)
+    # 5) enrich MySQL
     merged_df = enrich_with_mysql(merged_df)
 
-    # 6) Monta final_df (mesma lógica)
+    # 6) monta final_df
     final_df = build_final_df(merged_df)
 
-    # 7) Escreve ALOHA (atual) no Sheets (substitui salvar Aloha.xlsx como “fonte de verdade”)
+    # 7) sobrescreve ALOHA atual no Sheets
     write_df_to_sheet(final_df, SHEET_ID_ALOHA_ATUAL, SHEET_TAB_NAME)
     print("ALOHA (atual) sobrescrita no Google Sheets.")
 
-    # 8) Ainda gera Excel local porque o upload Selenium precisa de arquivo
+    # 8) gera excel local (necessário pro upload)
     filtered_df = write_excels_local(final_df)
-    print(f"Excel local gerado: {EXCEL_FULL_LOCAL} | Upload: {EXCEL_UPLOAD_LOCAL} | Linhas upload: {len(filtered_df)}")
+    print(
+        f"Excel local gerado: {EXCEL_FULL_LOCAL} | Upload: {EXCEL_UPLOAD_LOCAL} | "
+        f"Linhas upload: {len(filtered_df)}"
+    )
 
-    # 9) Diff: compara o “novo” vs “snapshot anterior”
-    #    Snapshot anterior = df_aloha_atual_old (antes da atualização), equivalente ao Aloha_last antigo
+    # 9) diff: compara novo vs snapshot anterior (df_aloha_atual_old)
     df_changes, email_texto = compute_changes(final_df, df_aloha_atual_old)
 
-    # 10) Aplica alterações/cancelamentos no Aloha via Selenium
+    # 10) aplica alterações/cancelamentos no Aloha (Playwright)
     aloha_apply_changes(df_changes)
 
-    # 11) Upload + casas a cadastrar
+    # 11) upload + casas a cadastrar
     casas_df, log_one, log_snow = aloha_upload_and_collect_missing()
 
-    # 12) E-mail
+    # 12) email
     texto_html = (email_texto or "").replace("\n", "<br>")
     df_html = casas_df.to_html(index=False) if casas_df is not None and not casas_df.empty else "<p>(Nenhuma casa a cadastrar)</p>"
 
@@ -891,7 +891,7 @@ def pipeline_run():
         recipient=EMAIL_RECIPIENTS,
         subject=EMAIL_SUBJECT,
         message_html=body,
-        attachment_path=EXCEL_UPLOAD_LOCAL,  # opcional (ajuda auditoria)
+        attachment_path=EXCEL_UPLOAD_LOCAL,  # opcional
         sender=EMAIL_SENDER,
     )
 
@@ -899,14 +899,14 @@ def pipeline_run():
 
 
 # =========================
-# AIRFLOW DAG (como você pediu)
+# AIRFLOW DAG
 # =========================
 with DAG(
     dag_id=DAG_ID,
     start_date=DAG_START_DATE,
     schedule=DAG_SCHEDULE,
     catchup=False,
-    tags=["ALOHA", "Streamline", "Sheets", "Selenium", "Gmail"],
+    tags=["ALOHA", "Streamline", "Sheets", "Playwright", "Gmail"],
 ) as dag:
 
     @task(retries=4, retry_exponential_backoff=True)
