@@ -884,7 +884,6 @@ def fazer_upload(page, cliente: str, caminho_arquivo: str, qtd_linhas: int):
             print("[ALOHA][UPLOAD] falhou salvar html:", repr(e))
 
     def close_modal_if_open():
-        # tenta fechar pelo X
         try:
             btn_close = page.locator(".modal-content button.close, .modal-content [data-dismiss='modal']")
             if btn_close.count() > 0 and btn_close.first.is_visible():
@@ -907,7 +906,7 @@ def fazer_upload(page, cliente: str, caminho_arquivo: str, qtd_linhas: int):
         page.wait_for_selector("a[data-click='NewOrderUploads']", timeout=60000)
         page.click("a[data-click='NewOrderUploads']")
 
-        # Espera o FORM do modal aparecer (como no HTML que você colou)
+        # Espera o FORM do modal aparecer
         page.wait_for_selector("#OrderUploadAddForm", timeout=30000)
 
         modal = page.locator(".modal-content").first
@@ -917,10 +916,12 @@ def fazer_upload(page, cliente: str, caminho_arquivo: str, qtd_linhas: int):
         sel_company = modal.locator("#OrderUploadCompanyId")
         inp_rows = modal.locator("#OrderUploadMaxRows")
         inp_file = modal.locator("#OrderUploadFile")
+        form = modal.locator("#OrderUploadAddForm")
 
         sel_company.wait_for(state="visible", timeout=30000)
         inp_rows.wait_for(state="visible", timeout=30000)
         inp_file.wait_for(state="visible", timeout=30000)
+        form.wait_for(state="visible", timeout=30000)
 
         # Preenche campos
         sel_company.select_option(label=cliente)
@@ -938,43 +939,65 @@ def fazer_upload(page, cliente: str, caminho_arquivo: str, qtd_linhas: int):
             timeout=30000,
         )
 
-        # Botão continue (é submit)
-        btn_continue = modal.locator("button[type='submit']:has-text('continue'), button[type='submit']:has-text('Continue')")
-        btn_continue.wait_for(state="visible", timeout=30000)
-
-        # Em alguns UIs o submit pode ficar disabled até validação JS
+        # Dispara eventos para validação JS (muito comum em modal)
         try:
-            page.wait_for_function("btn => !btn.disabled", btn_continue, timeout=15000)
+            sel_company.dispatch_event("change")
+            inp_rows.dispatch_event("input")
+            inp_rows.dispatch_event("change")
+            inp_file.dispatch_event("change")
         except Exception:
-            # Se continuar disabled, registra debug e tenta click "forçado" (último recurso)
-            print("[ALOHA][UPLOAD] continue aparenta disabled; tentando click...")
-        btn_continue.click()
+            pass
 
-        # Agora a tela muda (prévia/resultado). Como o Aloha é ajax, espere algo típico:
-        # - um botão Importar/Import
-        # - ou algum container de resultado
+        # Diagnóstico: validação do form + lista campos inválidos
+        validity = page.evaluate("""() => {
+            const form = document.querySelector('.modal-content #OrderUploadAddForm');
+            if (!form) return { ok: false, error: 'form_not_found' };
+            const ok = form.checkValidity();
+            const invalid = [...form.querySelectorAll(':invalid')].map(el => ({
+                id: el.id || null,
+                name: el.name || null,
+                type: el.type || null,
+                value: (el.type === 'file') ? (el.files && el.files.length ? '[file_set]' : '') : (el.value || '')
+            }));
+            return { ok, invalid };
+        }""")
+        print("[ALOHA][UPLOAD] form validity:", validity)
+
+        if not validity.get("ok", False):
+            dump_debug("form_invalid")
+            log_message += f"Form inválido no upload para {cliente}: {validity}\n"
+            return casas_nao_cadastradas, log_message
+
+        # ✅ SUBMIT sem depender do botão estar enabled
+        try:
+            page.evaluate("""() => {
+                const form = document.querySelector('.modal-content #OrderUploadAddForm');
+                if (form) form.requestSubmit();
+            }""")
+        except Exception:
+            # fallback: tenta clicar forçado no botão submit
+            btn_continue = modal.locator("button[type='submit']")
+            btn_continue.wait_for(state="visible", timeout=30000)
+            btn_continue.click(force=True)
+
+        # Agora aguarda o próximo passo: botão Importar/Import dentro do modal
         btn_importar = page.locator(".modal-content button:has-text('Importar'), .modal-content button:has-text('Import')")
         try:
             btn_importar.wait_for(state="visible", timeout=60000)
         except Exception:
-            # Se não apareceu botão Import, pode ter caído fora do modal ou mostrado mensagem de "nada a importar"
             dump_debug("no_import_button")
             log_message += f"Sem botão Importar / nada para importar para o cliente {cliente}.\n"
             return casas_nao_cadastradas, log_message
 
-        # Coleta "casas não cadastradas" (se o sistema renderizar nesse passo)
+        # Coleta "casas não cadastradas" (se renderizar nesse passo)
         try:
             casas_elements = page.query_selector_all(".modal-content div.row div.col-md-3 small")
             casas_nao_cadastradas = [c.inner_text().strip() for c in casas_elements if c.inner_text().strip()]
         except Exception:
             casas_nao_cadastradas = []
 
-        # Se Importar estiver disabled, normalmente é:
-        # - processamento ainda rodando
-        # - nenhuma linha válida
-        # - exige marcar checkbox
+        # Se Importar estiver disabled, tenta checkbox e espera habilitar
         if btn_importar.is_disabled():
-            # tenta marcar algum checkbox dentro do modal (se existir)
             try:
                 header_cb = page.locator(".modal-content th input[type='checkbox']")
                 row_cb = page.locator(".modal-content table input[type='checkbox']")
@@ -985,7 +1008,6 @@ def fazer_upload(page, cliente: str, caminho_arquivo: str, qtd_linhas: int):
             except Exception:
                 pass
 
-        # espera habilitar um pouco
         try:
             page.wait_for_function("btn => !btn.disabled", btn_importar, timeout=30000)
         except Exception:
@@ -999,7 +1021,6 @@ def fazer_upload(page, cliente: str, caminho_arquivo: str, qtd_linhas: int):
         btn_importar.click()
         log_message += f"Upload para o cliente {cliente} realizado com sucesso!\n"
 
-        # opcional: fecha modal ao final
         close_modal_if_open()
 
     except Exception as e:
@@ -1008,6 +1029,7 @@ def fazer_upload(page, cliente: str, caminho_arquivo: str, qtd_linhas: int):
         log_message += f"Ocorreu um erro durante o upload para {cliente}. Erro: {e}\n"
 
     return casas_nao_cadastradas, log_message
+
 
 
 
