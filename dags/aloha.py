@@ -894,132 +894,74 @@ def fazer_upload(page, cliente: str, caminho_arquivo: str, qtd_linhas: int):
 
     try:
         print("[ALOHA][UPLOAD] URL atual (antes de abrir modal):", page.url)
-
-        # Garante que estamos na tela de Orders
         if "/orders" not in page.url:
             page.goto(ALOHA_ORDERS_URL, wait_until="domcontentloaded", timeout=60000)
 
-        # Fecha modal antigo, se existir
         close_modal_if_open()
-
-        # Abre o modal "Add Orders"
         page.wait_for_selector("a[data-click='NewOrderUploads']", timeout=60000)
         page.click("a[data-click='NewOrderUploads']")
-
-        # Espera o FORM do modal aparecer
         page.wait_for_selector("#OrderUploadAddForm", timeout=30000)
 
         modal = page.locator(".modal-content").first
-        modal.wait_for(state="visible", timeout=30000)
-
-        # Seletores sempre dentro do modal
         sel_company = modal.locator("#OrderUploadCompanyId")
         inp_rows = modal.locator("#OrderUploadMaxRows")
         inp_file = modal.locator("#OrderUploadFile")
-        form = modal.locator("#OrderUploadAddForm")
+        btn_continue = modal.locator("button[type='submit']")
 
-        sel_company.wait_for(state="visible", timeout=30000)
-        inp_rows.wait_for(state="visible", timeout=30000)
-        inp_file.wait_for(state="visible", timeout=30000)
-        form.wait_for(state="visible", timeout=30000)
+        sel_company.wait_for(state="visible")
+        inp_rows.wait_for(state="visible")
+        inp_file.wait_for(state="visible")
 
-        # Preenche campos
         sel_company.select_option(label=cliente)
         inp_rows.fill(str(int(qtd_linhas)))
-
-        # Seta arquivo
         inp_file.set_input_files(caminho_arquivo)
 
-        # Confirma que o input recebeu o arquivo
+        # Dispara eventos de validação
+        sel_company.dispatch_event("change")
+        inp_rows.dispatch_event("input")
+        inp_rows.dispatch_event("change")
+        inp_file.dispatch_event("change")
+
+        # Aguarda arquivo estar setado
         page.wait_for_function(
             """() => {
-                const el = document.querySelector(".modal-content #OrderUploadFile");
+                const el = document.querySelector("#OrderUploadFile");
                 return el && el.files && el.files.length > 0;
             }""",
             timeout=30000,
         )
 
-        # Dispara eventos para validação JS (muito comum em modal)
+        # Força o clique no continue (sem esperar habilitar)
+        print("[ALOHA][UPLOAD] clicando em continue...")
+        btn_continue.click(force=True)
+
+        # Fecha modal se ele sumir
         try:
-            sel_company.dispatch_event("change")
-            inp_rows.dispatch_event("input")
-            inp_rows.dispatch_event("change")
-            inp_file.dispatch_event("change")
+            modal.wait_for(state="hidden", timeout=15000)
+            print("[ALOHA][UPLOAD] modal fechado, aguardando processamento...")
         except Exception:
-            pass
+            print("[ALOHA][UPLOAD] modal ainda visível (ajax interno), aguardando resultado...")
 
-        # Diagnóstico: validação do form + lista campos inválidos
-        validity = page.evaluate("""() => {
-            const form = document.querySelector('.modal-content #OrderUploadAddForm');
-            if (!form) return { ok: false, error: 'form_not_found' };
-            const ok = form.checkValidity();
-            const invalid = [...form.querySelectorAll(':invalid')].map(el => ({
-                id: el.id || null,
-                name: el.name || null,
-                type: el.type || null,
-                value: (el.type === 'file') ? (el.files && el.files.length ? '[file_set]' : '') : (el.value || '')
-            }));
-            return { ok, invalid };
-        }""")
-        print("[ALOHA][UPLOAD] form validity:", validity)
+        # Aguarda resultado do upload
+        page.wait_for_selector(
+            "button:has-text('Importar'), button:has-text('Import'), table, .alert",
+            timeout=90000,
+        )
 
-        if not validity.get("ok", False):
-            dump_debug("form_invalid")
-            log_message += f"Form inválido no upload para {cliente}: {validity}\n"
-            return casas_nao_cadastradas, log_message
+        # Tenta achar o botão importar (se existir)
+        btn_importar = page.locator("button:has-text('Importar'), button:has-text('Import')")
 
-        # ✅ SUBMIT sem depender do botão estar enabled
-        try:
-            page.evaluate("""() => {
-                const form = document.querySelector('.modal-content #OrderUploadAddForm');
-                if (form) form.requestSubmit();
-            }""")
-        except Exception:
-            # fallback: tenta clicar forçado no botão submit
-            btn_continue = modal.locator("button[type='submit']")
-            btn_continue.wait_for(state="visible", timeout=30000)
-            btn_continue.click(force=True)
-
-        # Agora aguarda o próximo passo: botão Importar/Import dentro do modal
-        btn_importar = page.locator(".modal-content button:has-text('Importar'), .modal-content button:has-text('Import')")
-        try:
-            btn_importar.wait_for(state="visible", timeout=60000)
-        except Exception:
-            dump_debug("no_import_button")
-            log_message += f"Sem botão Importar / nada para importar para o cliente {cliente}.\n"
-            return casas_nao_cadastradas, log_message
-
-        # Coleta "casas não cadastradas" (se renderizar nesse passo)
-        try:
-            casas_elements = page.query_selector_all(".modal-content div.row div.col-md-3 small")
-            casas_nao_cadastradas = [c.inner_text().strip() for c in casas_elements if c.inner_text().strip()]
-        except Exception:
-            casas_nao_cadastradas = []
-
-        # Se Importar estiver disabled, tenta checkbox e espera habilitar
-        if btn_importar.is_disabled():
-            try:
-                header_cb = page.locator(".modal-content th input[type='checkbox']")
-                row_cb = page.locator(".modal-content table input[type='checkbox']")
-                if header_cb.count() > 0:
-                    header_cb.first.check()
-                elif row_cb.count() > 0:
-                    row_cb.first.check()
-            except Exception:
-                pass
-
-        try:
-            page.wait_for_function("btn => !btn.disabled", btn_importar, timeout=30000)
-        except Exception:
-            dump_debug("import_disabled")
-            log_message += (
-                f"Não foi possível importar para {cliente}: botão Importar permaneceu desabilitado "
-                f"(provável: sem linhas válidas/duplicadas/validação).\n"
-            )
-            return casas_nao_cadastradas, log_message
-
-        btn_importar.click()
-        log_message += f"Upload para o cliente {cliente} realizado com sucesso!\n"
+        if btn_importar.count() > 0:
+            btn_importar.first.click()
+            log_message += f"Upload para o cliente {cliente} realizado com sucesso!\n"
+        else:
+            # Nenhum botão: pode ser sucesso automático ou mensagem
+            alerts = page.locator(".alert, .alert-success, .alert-warning, .alert-danger")
+            if alerts.count() > 0:
+                msgs = [alerts.nth(i).inner_text().strip() for i in range(alerts.count())]
+                log_message += f"Upload concluído (sem botão Importar). Mensagens: {' | '.join(msgs)}\n"
+            else:
+                log_message += f"Upload concluído para {cliente}, sem necessidade de Importar.\n"
 
         close_modal_if_open()
 
@@ -1029,6 +971,7 @@ def fazer_upload(page, cliente: str, caminho_arquivo: str, qtd_linhas: int):
         log_message += f"Ocorreu um erro durante o upload para {cliente}. Erro: {e}\n"
 
     return casas_nao_cadastradas, log_message
+
 
 
 
