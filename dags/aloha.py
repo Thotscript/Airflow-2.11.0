@@ -869,96 +869,115 @@ def fazer_upload(page, cliente: str, caminho_arquivo: str, qtd_linhas: int):
 
     def dump_debug(tag: str):
         ts = int(time.time())
+        safe_cliente = re.sub(r"[^a-zA-Z0-9_-]+", "_", cliente)
         try:
-            page.screenshot(path=f"/tmp/aloha_upload_{tag}_{cliente}_{ts}.png", full_page=True)
-            print(f"[ALOHA][UPLOAD] screenshot: /tmp/aloha_upload_{tag}_{cliente}_{ts}.png")
+            page.screenshot(path=f"/tmp/aloha_upload_{tag}_{safe_cliente}_{ts}.png", full_page=True)
+            print(f"[ALOHA][UPLOAD] screenshot: /tmp/aloha_upload_{tag}_{safe_cliente}_{ts}.png")
         except Exception as e:
             print("[ALOHA][UPLOAD] falhou screenshot:", repr(e))
         try:
             html = page.content()
-            with open(f"/tmp/aloha_upload_{tag}_{cliente}_{ts}.html", "w", encoding="utf-8") as f:
+            with open(f"/tmp/aloha_upload_{tag}_{safe_cliente}_{ts}.html", "w", encoding="utf-8") as f:
                 f.write(html)
-            print(f"[ALOHA][UPLOAD] html: /tmp/aloha_upload_{tag}_{cliente}_{ts}.html")
+            print(f"[ALOHA][UPLOAD] html: /tmp/aloha_upload_{tag}_{safe_cliente}_{ts}.html")
         except Exception as e:
             print("[ALOHA][UPLOAD] falhou salvar html:", repr(e))
 
+    def close_modal_if_open():
+        # tenta fechar pelo X
+        try:
+            btn_close = page.locator(".modal-content button.close, .modal-content [data-dismiss='modal']")
+            if btn_close.count() > 0 and btn_close.first.is_visible():
+                btn_close.first.click(timeout=2000)
+                time.sleep(1)
+        except Exception:
+            pass
+
     try:
+        print("[ALOHA][UPLOAD] URL atual (antes de abrir modal):", page.url)
+
+        # Garante que estamos na tela de Orders
+        if "/orders" not in page.url:
+            page.goto(ALOHA_ORDERS_URL, wait_until="domcontentloaded", timeout=60000)
+
+        # Fecha modal antigo, se existir
+        close_modal_if_open()
+
+        # Abre o modal "Add Orders"
         page.wait_for_selector("a[data-click='NewOrderUploads']", timeout=60000)
         page.click("a[data-click='NewOrderUploads']")
 
-        # Espera redirecionar para a página correta de upload
-        page.wait_for_load_state("domcontentloaded", timeout=60000)
-        try:
-            page.wait_for_url("**/orders/uploads**", timeout=10000)
-        except Exception:
-            # Se não redirecionou, verifica se login caiu ou modal bloqueou
-            print("[ALOHA][UPLOAD] Aviso: não redirecionou para /orders/uploads, verificando sessão/modal...")
-            # Se login expirou:
-            if "login" in page.url.lower():
-                print("[ALOHA][UPLOAD] Sessão expirada — tentando novo login.")
-                aloha_login(page)
-                page.click("a[data-click='NewOrderUploads']")
-                page.wait_for_url("**/orders/uploads**", timeout=10000)
-            else:
-                # tenta fechar modal (caso SweetAlert)
-                page.evaluate("""() => {
-                    const btn = document.querySelector('.sweet-alert button.confirm');
-                    if (btn) btn.click();
-                }""")
-                time.sleep(2)
+        # Espera o FORM do modal aparecer (como no HTML que você colou)
+        page.wait_for_selector("#OrderUploadAddForm", timeout=30000)
 
+        modal = page.locator(".modal-content").first
+        modal.wait_for(state="visible", timeout=30000)
 
-        page.wait_for_selector("#OrderUploadCompanyId", timeout=60000)
-        page.select_option("#OrderUploadCompanyId", label=cliente)
+        # Seletores sempre dentro do modal
+        sel_company = modal.locator("#OrderUploadCompanyId")
+        inp_rows = modal.locator("#OrderUploadMaxRows")
+        inp_file = modal.locator("#OrderUploadFile")
 
-        page.fill("#OrderUploadMaxRows", str(qtd_linhas))
+        sel_company.wait_for(state="visible", timeout=30000)
+        inp_rows.wait_for(state="visible", timeout=30000)
+        inp_file.wait_for(state="visible", timeout=30000)
 
-        print("[ALOHA][UPLOAD] URL atual:", page.url)
-        # upload arquivo
-        page.set_input_files("#OrderUploadFile", caminho_arquivo)
+        # Preenche campos
+        sel_company.select_option(label=cliente)
+        inp_rows.fill(str(int(qtd_linhas)))
 
-        # garante que o arquivo foi de fato setado antes de clicar Continue
+        # Seta arquivo
+        inp_file.set_input_files(caminho_arquivo)
+
+        # Confirma que o input recebeu o arquivo
         page.wait_for_function(
             """() => {
-                const el = document.querySelector("#OrderUploadFile");
+                const el = document.querySelector(".modal-content #OrderUploadFile");
                 return el && el.files && el.files.length > 0;
             }""",
             timeout=30000,
         )
 
-        # botão continue pode ficar disabled até o file input estar ok
-        btn_continue = page.locator("button:has-text('continue'), button:has-text('Continue')")
-        btn_continue.wait_for(state="visible", timeout=60000)
-        page.wait_for_function("btn => !btn.disabled", btn_continue, timeout=60000)
+        # Botão continue (é submit)
+        btn_continue = modal.locator("button[type='submit']:has-text('continue'), button[type='submit']:has-text('Continue')")
+        btn_continue.wait_for(state="visible", timeout=30000)
+
+        # Em alguns UIs o submit pode ficar disabled até validação JS
+        try:
+            page.wait_for_function("btn => !btn.disabled", btn_continue, timeout=15000)
+        except Exception:
+            # Se continuar disabled, registra debug e tenta click "forçado" (último recurso)
+            print("[ALOHA][UPLOAD] continue aparenta disabled; tentando click...")
         btn_continue.click()
 
-        # aguarda “resultados” do parsing do arquivo
-        page.wait_for_selector("div.panel-body", timeout=90000)
-
-        # casas não cadastradas (se existirem)
+        # Agora a tela muda (prévia/resultado). Como o Aloha é ajax, espere algo típico:
+        # - um botão Importar/Import
+        # - ou algum container de resultado
+        btn_importar = page.locator(".modal-content button:has-text('Importar'), .modal-content button:has-text('Import')")
         try:
-            page.wait_for_selector("div.row div.col-md-3 small", timeout=15000)
-            casas_elements = page.query_selector_all("div.row div.col-md-3 small")
+            btn_importar.wait_for(state="visible", timeout=60000)
+        except Exception:
+            # Se não apareceu botão Import, pode ter caído fora do modal ou mostrado mensagem de "nada a importar"
+            dump_debug("no_import_button")
+            log_message += f"Sem botão Importar / nada para importar para o cliente {cliente}.\n"
+            return casas_nao_cadastradas, log_message
+
+        # Coleta "casas não cadastradas" (se o sistema renderizar nesse passo)
+        try:
+            casas_elements = page.query_selector_all(".modal-content div.row div.col-md-3 small")
             casas_nao_cadastradas = [c.inner_text().strip() for c in casas_elements if c.inner_text().strip()]
         except Exception:
             casas_nao_cadastradas = []
 
-        # --- IMPORTAR ---
-        btn_importar = page.locator("button:has-text('Importar'), button:has-text('Import')")
-        if btn_importar.count() == 0:
-            # sem botão -> normalmente significa que não há nada pra importar ou layout mudou
-            log_message += f"Sem botão Importar / nada para importar para o cliente {cliente}.\n"
-            return casas_nao_cadastradas, log_message
-
-        btn_importar.first.wait_for(state="visible", timeout=60000)
-
-        # Se estiver disabled, muitas telas exigem selecionar linhas (checkbox) antes:
-        # tenta selecionar o "select all" ou pelo menos 1 checkbox.
-        if btn_importar.first.is_disabled():
-            # tenta checkbox do cabeçalho primeiro
-            header_cb = page.locator("th input[type='checkbox']")
-            row_cb = page.locator("table input[type='checkbox']")
+        # Se Importar estiver disabled, normalmente é:
+        # - processamento ainda rodando
+        # - nenhuma linha válida
+        # - exige marcar checkbox
+        if btn_importar.is_disabled():
+            # tenta marcar algum checkbox dentro do modal (se existir)
             try:
+                header_cb = page.locator(".modal-content th input[type='checkbox']")
+                row_cb = page.locator(".modal-content table input[type='checkbox']")
                 if header_cb.count() > 0:
                     header_cb.first.check()
                 elif row_cb.count() > 0:
@@ -966,48 +985,30 @@ def fazer_upload(page, cliente: str, caminho_arquivo: str, qtd_linhas: int):
             except Exception:
                 pass
 
-        # Agora espera habilitar (ou falha controlada com debug)
+        # espera habilitar um pouco
         try:
-            page.wait_for_function("btn => !btn.disabled", btn_importar.first, timeout=60000)
+            page.wait_for_function("btn => !btn.disabled", btn_importar, timeout=30000)
         except Exception:
-            # coleta mensagens de erro que expliquem por que não habilitou
             dump_debug("import_disabled")
-
-            # tenta capturar alerts/textos comuns
-            try:
-                alerts = page.locator(".alert, .alert-danger, .alert-warning, .text-danger, .has-error")
-                msgs = []
-                for i in range(min(alerts.count(), 10)):
-                    t = alerts.nth(i).inner_text().strip()
-                    if t:
-                        msgs.append(t)
-                if msgs:
-                    log_message += (
-                        f"Não foi possível importar para {cliente}: botão Importar permaneceu desabilitado.\n"
-                        f"Mensagens na tela: {' | '.join(msgs)}\n"
-                    )
-                else:
-                    log_message += (
-                        f"Não foi possível importar para {cliente}: botão Importar permaneceu desabilitado "
-                        f"(provável: sem linhas válidas/duplicadas/validação).\n"
-                    )
-            except Exception:
-                log_message += (
-                    f"Não foi possível importar para {cliente}: botão Importar permaneceu desabilitado "
-                    f"(sem detalhes capturados).\n"
-                )
-
+            log_message += (
+                f"Não foi possível importar para {cliente}: botão Importar permaneceu desabilitado "
+                f"(provável: sem linhas válidas/duplicadas/validação).\n"
+            )
             return casas_nao_cadastradas, log_message
 
-        # Se habilitou, clica
-        btn_importar.first.click()
+        btn_importar.click()
         log_message += f"Upload para o cliente {cliente} realizado com sucesso!\n"
+
+        # opcional: fecha modal ao final
+        close_modal_if_open()
 
     except Exception as e:
         dump_debug("exception")
+        print(f"[ALOHA][UPLOAD] ERRO cliente={cliente} | url={page.url} | erro={repr(e)}")
         log_message += f"Ocorreu um erro durante o upload para {cliente}. Erro: {e}\n"
 
     return casas_nao_cadastradas, log_message
+
 
 
 
