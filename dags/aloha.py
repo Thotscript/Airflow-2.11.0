@@ -408,6 +408,17 @@ def enrich_with_mysql(merged_df: pd.DataFrame) -> pd.DataFrame:
         engine,
     )
 
+    merged_df["unit_id"] = pd.to_numeric(merged_df.get("unit_id"), errors="coerce").astype("Int64")
+    
+    df_conc["id_house"] = pd.to_numeric(df_conc.get("id_house"), errors="coerce").astype("Int64")
+
+    merged_df = merged_df.merge(
+        df_conc,
+        left_on="unit_id",
+        right_on="id_house",
+        how="left",
+    )
+
     merged_df = merged_df.merge(df_conc, left_on="unit_id", right_on="id_house", how="left")
 
     merged_df["Unit"] = merged_df.apply(
