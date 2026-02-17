@@ -233,11 +233,18 @@ def main_2025():
         startdate = f"{month:02d}/01/2025"
         if month == 12:
             last_day = 31
+            # Estende 10 dias para janeiro de 2026
+            enddate = "01/10/2026"
         else:
             last_day = (datetime(2025, month + 1, 1) - timedelta(days=1)).day
+            # Estende 10 dias além do fim do mês para capturar
+            # reservas que começam no mês mas terminam no seguinte
+            extended_end = datetime(2025, month, last_day) + timedelta(days=10)
+            enddate = extended_end.strftime("%m/%d/%Y")
+
         months_2025.append({
             'startdate': startdate,
-            'enddate': f"{month:02d}/{last_day}/2025",
+            'enddate': enddate,          # range estendido só para a chamada da API
             'year': 2025,
             'month': month,
             'month_str': f"2025-{month:02d}"
@@ -251,6 +258,8 @@ def main_2025():
         print(f"\n=== Processando unit_id: {unit_id} ===")
         for month_info in months_2025:
             blocked = fetch_calendar(session, unit_id, month_info['startdate'], month_info['enddate'])
+            # calculate_occupancy usa sempre o startdate real do mês (01/mm/2025)
+            # e já corta o overlap — dias de março não contaminam fevereiro
             occupancy_rate, days_occupied, days_in_month = calculate_occupancy(
                 blocked, month_info['startdate']
             )
