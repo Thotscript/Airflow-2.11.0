@@ -255,9 +255,20 @@ def main():
     months_2026 = []
     for month in range(1, 13):
         startdate = f"{month:02d}/01/2026"
-        if month == 12: last_day = 31
-        else: last_day = (datetime(2026, month + 1, 1) - timedelta(days=1)).day
-        months_2026.append({'startdate': startdate, 'enddate': f"{month:02d}/{last_day}/2026", 'year': 2026, 'month': month, 'month_str': f"2026-{month:02d}"})
+        if month == 12:
+            enddate = "01/10/2027"
+        else:
+            last_day = (datetime(2026, month + 1, 1) - timedelta(days=1)).day
+            extended_end = datetime(2026, month, last_day) + timedelta(days=10)
+            enddate = extended_end.strftime("%m/%d/%Y")
+
+        months_2026.append({
+            'startdate': startdate,
+            'enddate': enddate,
+            'year': 2026,
+            'month': month,
+            'month_str': f"2026-{month:02d}"
+        })
     
     session = requests.Session()
     results = []
