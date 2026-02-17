@@ -9,7 +9,7 @@ from requests.adapters import HTTPAdapter, Retry
 from collections import deque
 import mysql.connector
 import pendulum
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from airflow import DAG
 from airflow.decorators import task
 from airflow.exceptions import AirflowException
@@ -132,38 +132,101 @@ def fetch_calendar(session: requests.Session, unit_id: int, startdate: str, endd
         print(f"[ERROR] Erro inesperado para unit_id={unit_id}: {e}")
         return []
 
-def calculate_occupancy(blocked: list, startdate: str) -> tuple:
+
+def calculate_occupancy_extended(blocked: list, startdate: str, today: date) -> dict:
+    """
+    Calcula ocupação mensal com colunas extras para YTD e Full Year no Power BI.
+
+    Colunas novas:
+    - days_elapsed       : dias do mês já passados até hoje (inclusive)
+                           mês passado  → days_in_month
+                           mês atual    → dia de hoje dentro do mês
+                           mês futuro   → 0
+    - days_occupied_past : dias ocupados que já ocorreram (≤ hoje)
+    - days_occupied_future: dias ocupados que ainda vão ocorrer (> hoje)
+    - is_complete_month  : 1 se o mês inteiro já passou, 0 caso contrário
+    - is_future_month    : 1 se o mês ainda não começou, 0 caso contrário
+
+    Fórmulas Power BI:
+      YTD Occupancy   = DIVIDE(SUM(days_occupied_past), SUM(days_elapsed))
+      Full Year       = DIVIDE(SUM(days_occupied),      SUM(days_in_month))
+    """
     mes_obj = datetime.strptime(startdate, "%m/%d/%Y")
-    first_day_month = mes_obj
+    first_day = mes_obj.date()
     if mes_obj.month == 12:
-        last_day_month = datetime(mes_obj.year + 1, 1, 1) - timedelta(days=1)
+        last_day = date(mes_obj.year + 1, 1, 1) - timedelta(days=1)
     else:
-        last_day_month = datetime(mes_obj.year, mes_obj.month + 1, 1) - timedelta(days=1)
-    dias_no_mes = last_day_month.day
+        last_day = date(mes_obj.year, mes_obj.month + 1, 1) - timedelta(days=1)
+
+    dias_no_mes = last_day.day
+
+    # ── Flags de status do mês ──────────────────────────────────────────────
+    is_complete_month = 1 if last_day < today else 0
+    is_future_month   = 1 if first_day > today else 0
+
+    # ── days_elapsed: quantos dias do mês já "passaram" ─────────────────────
+    if is_future_month:
+        days_elapsed = 0
+    elif is_complete_month:
+        days_elapsed = dias_no_mes
+    else:
+        # Mês em curso: conta do dia 1 até hoje (inclusive)
+        days_elapsed = (today - first_day).days + 1
+
     if not blocked:
-        return (0.0, 0, dias_no_mes)
-    reservas_com_overlap = 0
-    dias_ocupados_set = set()
+        return {
+            "occupancy_rate":      0.0,
+            "days_occupied":       0,
+            "days_in_month":       dias_no_mes,
+            "days_elapsed":        days_elapsed,
+            "days_occupied_past":  0,
+            "days_occupied_future":0,
+            "is_complete_month":   is_complete_month,
+            "is_future_month":     is_future_month,
+        }
+
+    dias_ocupados_set        = set()
+    dias_ocupados_past_set   = set()
+    dias_ocupados_future_set = set()
+
     for b in blocked:
         try:
-            start = datetime.strptime(b["startdate"], "%m/%d/%Y")
-            end = datetime.strptime(b["enddate"], "%m/%d/%Y")
-            if end < first_day_month or start > last_day_month:
+            start = datetime.strptime(b["startdate"], "%m/%d/%Y").date()
+            end   = datetime.strptime(b["enddate"],   "%m/%d/%Y").date()
+
+            if end < first_day or start > last_day:
                 continue
-            reservas_com_overlap += 1
-            overlap_start = max(start, first_day_month)
-            overlap_end = min(end, last_day_month)
-            current_day = overlap_start
-            while current_day <= overlap_end:
-                if first_day_month <= current_day <= last_day_month:
-                    dias_ocupados_set.add(current_day.date())
-                current_day += timedelta(days=1)
-        except:
+
+            overlap_start = max(start, first_day)
+            overlap_end   = min(end,   last_day)
+
+            current = overlap_start
+            while current <= overlap_end:
+                dias_ocupados_set.add(current)
+                if current <= today:
+                    dias_ocupados_past_set.add(current)
+                else:
+                    dias_ocupados_future_set.add(current)
+                current += timedelta(days=1)
+        except Exception:
             continue
-    dias_ocupados = len(dias_ocupados_set)
-    dias_ocupados = min(dias_ocupados, dias_no_mes)
-    ocupacao = dias_ocupados / dias_no_mes
-    return (ocupacao, dias_ocupados, dias_no_mes)
+
+    dias_ocupados        = min(len(dias_ocupados_set),        dias_no_mes)
+    days_occupied_past   = min(len(dias_ocupados_past_set),   dias_no_mes)
+    days_occupied_future = min(len(dias_ocupados_future_set), dias_no_mes)
+    ocupacao             = dias_ocupados / dias_no_mes
+
+    return {
+        "occupancy_rate":      round(ocupacao, 4),
+        "days_occupied":       dias_ocupados,
+        "days_in_month":       dias_no_mes,
+        "days_elapsed":        days_elapsed,
+        "days_occupied_past":  days_occupied_past,
+        "days_occupied_future":days_occupied_future,
+        "is_complete_month":   is_complete_month,
+        "is_future_month":     is_future_month,
+    }
+
 
 def get_active_houses():
     conn = mysql.connector.connect(**DB_CFG)
@@ -180,14 +243,19 @@ def create_occupancy_table():
         cur = conn.cursor()
         create_sql = f"""
         CREATE TABLE IF NOT EXISTS `{TB_NAME}` (
-            `unit_id` BIGINT NOT NULL,
-            `year` INT NOT NULL,
-            `month` INT NOT NULL,
-            `month_str` VARCHAR(7) NOT NULL,
-            `occupancy_rate` DECIMAL(5,4) NULL,
-            `days_occupied` INT NULL,
-            `days_in_month` INT NULL,
-            `extraction_date` DATETIME NOT NULL,
+            `unit_id`              BIGINT       NOT NULL,
+            `year`                 INT          NOT NULL,
+            `month`                INT          NOT NULL,
+            `month_str`            VARCHAR(7)   NOT NULL,
+            `occupancy_rate`       DECIMAL(5,4) NULL,
+            `days_occupied`        INT          NULL,
+            `days_in_month`        INT          NULL,
+            `days_elapsed`         INT          NULL COMMENT 'Dias do mes ja passados ate hoje (inclusive). Use para denominador do YTD.',
+            `days_occupied_past`   INT          NULL COMMENT 'Dias ocupados que ja ocorreram (<= hoje). Numerador do YTD.',
+            `days_occupied_future` INT          NULL COMMENT 'Dias ocupados ainda no futuro (> hoje).',
+            `is_complete_month`    TINYINT(1)   NULL COMMENT '1 = mes inteiro ja passou.',
+            `is_future_month`      TINYINT(1)   NULL COMMENT '1 = mes ainda nao comecou.',
+            `extraction_date`      DATETIME     NOT NULL,
             PRIMARY KEY (`unit_id`, `year`, `month`, `extraction_date`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """
@@ -202,25 +270,30 @@ def save_occupancy_data(df: pd.DataFrame):
     try:
         cur = conn.cursor()
         insert_sql = f"""
-        INSERT INTO `{TB_NAME}` 
-            (unit_id, year, month, month_str, occupancy_rate, days_occupied, days_in_month, extraction_date) 
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO `{TB_NAME}`
+            (unit_id, year, month, month_str,
+             occupancy_rate, days_occupied, days_in_month,
+             days_elapsed, days_occupied_past, days_occupied_future,
+             is_complete_month, is_future_month,
+             extraction_date)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
-            occupancy_rate = VALUES(occupancy_rate),
-            days_occupied = VALUES(days_occupied),
-            days_in_month = VALUES(days_in_month),
-            extraction_date = VALUES(extraction_date)
+            occupancy_rate       = VALUES(occupancy_rate),
+            days_occupied        = VALUES(days_occupied),
+            days_in_month        = VALUES(days_in_month),
+            days_elapsed         = VALUES(days_elapsed),
+            days_occupied_past   = VALUES(days_occupied_past),
+            days_occupied_future = VALUES(days_occupied_future),
+            is_complete_month    = VALUES(is_complete_month),
+            is_future_month      = VALUES(is_future_month),
+            extraction_date      = VALUES(extraction_date)
         """
         cur.executemany(insert_sql, [tuple(r) for r in df.itertuples(index=False, name=None)])
         conn.commit()
     finally:
         conn.close()
 
-# -------------------------------------------------------
-# DIFERENÇA PRINCIPAL: apenas 2025, todos os 12 meses
-# Como 2025 já passou, não há necessidade de filtrar por
-# "mês atual" — pegamos o ano inteiro de uma vez.
-# -------------------------------------------------------
+
 def main_2025():
     create_occupancy_table()
     unit_ids = get_active_houses()
@@ -228,26 +301,26 @@ def main_2025():
         print("[INFO] Nenhuma casa ativa encontrada.")
         return
 
+    # 2025 já passou inteiro → today é fixo no último dia do ano para o backfill
+    # Mantemos date.today() real para que days_elapsed seja correto:
+    # todos os meses de 2025 serão is_complete_month=1 e days_elapsed=days_in_month
+    today = date.today()
+
     months_2025 = []
     for month in range(1, 13):
         startdate = f"{month:02d}/01/2025"
         if month == 12:
-            last_day = 31
-            # Estende 10 dias para janeiro de 2026
             enddate = "01/10/2026"
         else:
             last_day = (datetime(2025, month + 1, 1) - timedelta(days=1)).day
-            # Estende 10 dias além do fim do mês para capturar
-            # reservas que começam no mês mas terminam no seguinte
             extended_end = datetime(2025, month, last_day) + timedelta(days=10)
             enddate = extended_end.strftime("%m/%d/%Y")
-
         months_2025.append({
             'startdate': startdate,
-            'enddate': enddate,          # range estendido só para a chamada da API
-            'year': 2025,
-            'month': month,
-            'month_str': f"2025-{month:02d}"
+            'enddate':   enddate,
+            'year':      2025,
+            'month':     month,
+            'month_str': f"2025-{month:02d}",
         })
 
     session = requests.Session()
@@ -258,24 +331,28 @@ def main_2025():
         print(f"\n=== Processando unit_id: {unit_id} ===")
         for month_info in months_2025:
             blocked = fetch_calendar(session, unit_id, month_info['startdate'], month_info['enddate'])
-            # calculate_occupancy usa sempre o startdate real do mês (01/mm/2025)
-            # e já corta o overlap — dias de março não contaminam fevereiro
-            occupancy_rate, days_occupied, days_in_month = calculate_occupancy(
-                blocked, month_info['startdate']
-            )
+            occ = calculate_occupancy_extended(blocked, month_info['startdate'], today)
+
             results.append({
-                'unit_id': unit_id,
-                'year': month_info['year'],
-                'month': month_info['month'],
-                'month_str': month_info['month_str'],
-                'occupancy_rate': round(occupancy_rate, 4),
-                'days_occupied': days_occupied,
-                'days_in_month': days_in_month,
-                'extraction_date': extraction_date,
+                'unit_id':              unit_id,
+                'year':                 month_info['year'],
+                'month':                month_info['month'],
+                'month_str':            month_info['month_str'],
+                'occupancy_rate':       occ['occupancy_rate'],
+                'days_occupied':        occ['days_occupied'],
+                'days_in_month':        occ['days_in_month'],
+                'days_elapsed':         occ['days_elapsed'],
+                'days_occupied_past':   occ['days_occupied_past'],
+                'days_occupied_future': occ['days_occupied_future'],
+                'is_complete_month':    occ['is_complete_month'],
+                'is_future_month':      occ['is_future_month'],
+                'extraction_date':      extraction_date,
             })
             print(
                 f"  Casa {unit_id} | {month_info['month_str']} | "
-                f"Ocupação: {occupancy_rate:.2%} ({days_occupied}/{days_in_month} dias)"
+                f"Ocupação: {occ['occupancy_rate']:.2%} ({occ['days_occupied']}/{occ['days_in_month']} dias) | "
+                f"Passado: {occ['days_occupied_past']} | Futuro: {occ['days_occupied_future']} | "
+                f"Elapsed: {occ['days_elapsed']}"
             )
 
     save_occupancy_data(pd.DataFrame(results))
@@ -285,11 +362,8 @@ def main_2025():
 SP_TZ = pendulum.timezone("America/Sao_Paulo")
 
 with DAG(
-    # dag_id diferente para não conflitar com a de 2026
     dag_id="OVH-tb_occupancy_houses_2025_backfill",
-    # start_date no passado; com catchup=False roda imediatamente ao ser ativada
     start_date=pendulum.datetime(2025, 12, 19, 8, 0, tz=SP_TZ),
-    # @once: executa uma única vez e não agenda novamente
     schedule="@once",
     catchup=False,
     tags=["Tabelas - OVH", "Ocupacao", "Backfill"],
