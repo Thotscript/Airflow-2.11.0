@@ -1002,11 +1002,6 @@ def fazer_upload(page, cliente: str, caminho_arquivo: str, qtd_linhas: int):
         return casas_nao_cadastradas, log_message
 
 
-
-
-
-
-
 def aloha_upload_and_collect_missing():
     playwright, browser, context, page = build_browser()
 

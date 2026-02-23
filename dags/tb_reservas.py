@@ -11,10 +11,11 @@ from airflow import DAG
 from airflow.decorators import task
 from airflow.exceptions import AirflowException
 from airflow.operators.trigger_dagrun import TriggerDagRunOperator
+from airflow.models import Variable
 
 API_URL = "https://web.streamlinevrs.com/api/json"
-TOKEN_KEY = "3ef223d3bbf7086cfb86df7e98d6e5d2"
-TOKEN_SECRET = "a88d05b895affb815cc8a4d96670698ee486ea30"
+TOKEN_KEY = Variable.get("STREAMLINE_TOKEN_KEY")
+TOKEN_SECRET = Variable.get("STREAMLINE_TOKEN_SECRET")
 
 DB_CFG = dict(
     host="host.docker.internal",

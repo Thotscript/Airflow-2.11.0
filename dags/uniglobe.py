@@ -14,7 +14,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from google.auth.exceptions import RefreshError
-
+from airflow.models import Variable
 # Airflow / Scheduler
 import pendulum
 from airflow import DAG
@@ -45,8 +45,8 @@ MYSQL_CONFIG = {
 
 # Streamline
 STREAMLINE_URL = "https://web.streamlinevrs.com/api/json"
-TOKEN_KEY = "3ef223d3bbf7086cfb86df7e98d6e5d2"
-TOKEN_SECRET = "a88d05b895affb815cc8a4d96670698ee486ea30"
+TOKEN_KEY = Variable.get("STREAMLINE_TOKEN_KEY")
+TOKEN_SECRET = Variable.get("STREAMLINE_TOKEN_SECRET")
 HEADERS_JSON = {"Content-Type": "application/json"}
 
 # Saída

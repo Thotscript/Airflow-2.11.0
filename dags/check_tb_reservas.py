@@ -9,7 +9,7 @@ SP_TZ = pendulum.timezone("America/Sao_Paulo")
 
 def get_engine(database: str):
     DB_USER = "root"
-    DB_PASS = "Tfl1234@"   # ⚠️ Recomenda-se usar Connection do Airflow
+    DB_PASS = "Tfl1234@"
     DB_HOST = "host.docker.internal"
     DB_PORT = 3306
     url = f"mysql+pymysql://{DB_USER}:{quote_plus(DB_PASS)}@{DB_HOST}:{DB_PORT}/{database}?charset=utf8mb4"
