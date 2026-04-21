@@ -54,33 +54,27 @@ def create_occupancy_table():
 
 
 def fetch_reservations():
-    """
-    Busca as reservas diretamente da tb_reservas
-    e relaciona com tb_active_houses:
-      tb_reservas.unit_id = tb_active_houses.id
-    """
     year_start = f"{TARGET_YEAR}-01-01"
-    year_end = f"{TARGET_YEAR}-12-31"
+    year_end   = f"{TARGET_YEAR}-12-31"
 
     query = f"""
         SELECT DISTINCT
             r.unit_id,
             CAST(r.confirmation_id AS CHAR) AS confirmation_id,
             DATE(r.startdate) AS startdate,
-            DATE(r.enddate) AS enddate
+            DATE(r.enddate)   AS enddate
         FROM `{SOURCE_SCHEMA}`.`{TB_RESERVAS}` r
         INNER JOIN `{SOURCE_SCHEMA}`.`{TB_ACTIVE_HOUSES}` ah
             ON ah.id = r.unit_id
         WHERE ah.renting_type = 'RENTING'
-          AND ah.id IS NOT NULL
-          AND r.unit_id IS NOT NULL
+          AND ah.id             IS NOT NULL
+          AND r.unit_id         IS NOT NULL
           AND r.confirmation_id IS NOT NULL
-          AND r.startdate IS NOT NULL
-          AND r.enddate IS NOT NULL
-          AND DATE(r.enddate) >= %s
-          AND DATE(r.startdate) <= %s
+          AND r.startdate       IS NOT NULL
+          AND r.enddate         IS NOT NULL
+          AND DATE(r.enddate)   >= %s    -- termina dentro ou depois do início do ano
+          AND DATE(r.startdate) <= %s    -- começa antes ou dentro do fim do ano
     """
-
     conn = mysql.connector.connect(**DB_CFG)
     try:
         df = pd.read_sql(query, conn, params=(year_start, year_end))
@@ -90,64 +84,39 @@ def fetch_reservations():
 
 
 def build_daily_occupancy_rows(df_reservas: pd.DataFrame) -> pd.DataFrame:
-    """
-    Gera 1 linha por dia reservado.
-
-    Exemplo:
-      confirmation_id | days | occupied_date | unit_id
-             233      |  1   | 2026-04-10    | 24
-             233      |  1   | 2026-04-11    | 24
-             233      |  1   | 2026-04-12    | 24
-    """
     if df_reservas.empty:
         return pd.DataFrame(columns=[
-            "unit_id",
-            "confirmation_id",
-            "occupied_date",
-            "days",
-            "year",
-            "month",
-            "day",
-            "month_str",
-            "startdate",
-            "enddate",
-            "extraction_date",
+            "unit_id", "confirmation_id", "occupied_date", "days",
+            "year", "month", "day", "month_str",
+            "startdate", "enddate", "extraction_date",
         ])
 
-    year_start = date(TARGET_YEAR, 1, 1)
-    year_end = date(TARGET_YEAR, 12, 31)
     extraction_date = datetime.now()
-
     rows = []
 
     for row in df_reservas.itertuples(index=False):
-        unit_id = int(row.unit_id)
+        unit_id         = int(row.unit_id)
         confirmation_id = str(row.confirmation_id)
+        startdate       = pd.to_datetime(row.startdate).date()
+        enddate         = pd.to_datetime(row.enddate).date()
 
-        startdate = pd.to_datetime(row.startdate).date()
-        enddate = pd.to_datetime(row.enddate).date()
-
-        # recorta a reserva para o ano alvo
-        effective_start = max(startdate, year_start)
-        effective_end = min(enddate, year_end)
-
-        if effective_end < effective_start:
+        if enddate < startdate:
             continue
 
-        for occupied_date in pd.date_range(start=effective_start, end=effective_end, freq="D"):
+        # ── Gera 1 linha por dia da reserva completa, sem recortar pelo ano ──
+        for occupied_date in pd.date_range(start=startdate, end=enddate, freq="D"):
             occupied_date = occupied_date.date()
-
             rows.append({
-                "unit_id": unit_id,
+                "unit_id":         unit_id,
                 "confirmation_id": confirmation_id,
-                "occupied_date": occupied_date,
-                "days": 1,
-                "year": occupied_date.year,
-                "month": occupied_date.month,
-                "day": occupied_date.day,
-                "month_str": occupied_date.strftime("%Y-%m"),
-                "startdate": startdate,
-                "enddate": enddate,
+                "occupied_date":   occupied_date,
+                "days":            1,
+                "year":            occupied_date.year,
+                "month":           occupied_date.month,
+                "day":             occupied_date.day,
+                "month_str":       occupied_date.strftime("%Y-%m"),
+                "startdate":       startdate,
+                "enddate":         enddate,
                 "extraction_date": extraction_date,
             })
 
@@ -161,15 +130,26 @@ def build_daily_occupancy_rows(df_reservas: pd.DataFrame) -> pd.DataFrame:
 
     return df_days
 
-
 def clear_target_year():
     conn = mysql.connector.connect(**DB_CFG)
     try:
         cur = conn.cursor()
-        delete_sql = f"DELETE FROM `{DEST_SCHEMA}`.`{TB_NAME}` WHERE `year` = %s"
-        cur.execute(delete_sql, (TARGET_YEAR,))
+        # Deleta todos os dias que pertencem a reservas do ano alvo
+        # usando o range de datas das reservas que tocam o ano
+        delete_sql = f"""
+            DELETE FROM `{DEST_SCHEMA}`.`{TB_NAME}`
+            WHERE confirmation_id IN (
+                SELECT CAST(confirmation_id AS CHAR)
+                FROM `{SOURCE_SCHEMA}`.`{TB_RESERVAS}`
+                WHERE DATE(enddate)   >= %s
+                  AND DATE(startdate) <= %s
+            )
+        """
+        year_start = f"{TARGET_YEAR}-01-01"
+        year_end   = f"{TARGET_YEAR}-12-31"
+        cur.execute(delete_sql, (year_start, year_end))
         conn.commit()
-        print(f"[INFO] Dados antigos de {TARGET_YEAR} removidos de {DEST_SCHEMA}.{TB_NAME}")
+        print(f"[INFO] Dados de reservas do período {year_start} a {year_end} removidos de {DEST_SCHEMA}.{TB_NAME}")
     finally:
         conn.close()
 
