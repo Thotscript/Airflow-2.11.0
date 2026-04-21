@@ -53,7 +53,7 @@ from google.auth.exceptions import RefreshError
 import pendulum
 from airflow import DAG
 from airflow.decorators import task
-
+from airflow.models import Variable
 
 # ==========================
 # CONFIGURAÇÕES
@@ -62,8 +62,8 @@ SP_TZ = pendulum.timezone("America/Sao_Paulo")
 
 # --- Streamline ---
 STREAMLINE_URL = "https://web.streamlinevrs.com/api/json"
-STREAMLINE_TOKEN_KEY = "3ef223d3bbf7086cfb86df7e98d6e5d2"
-STREAMLINE_TOKEN_SECRET = "a88d05b895affb815cc8a4d96670698ee486ea30"
+STREAMLINE_TOKEN_KEY = Variable.get("STREAMLINE_TOKEN_KEY")
+STREAMLINE_TOKEN_SECRET = Variable.get("STREAMLINE_TOKEN_SECRET")
 STREAMLINE_HEADERS = {"Content-Type": "application/json"}
 
 REPORT_START_DAYS_BACK = 5
