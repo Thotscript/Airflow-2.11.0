@@ -39,8 +39,7 @@ def fetch_property_list_wordpress() -> pd.DataFrame:
         "methodName": "GetPropertyListWordPress",
         "params": {
             "token_key": TOKEN_KEY,
-            "token_secret": TOKEN_SECRET,
-            "owning_type_id": 2
+            "token_secret": TOKEN_SECRET
         }
     }
     resp = requests.post(STREAMLINE_URL, data=json.dumps(payload), headers=HEADERS, timeout=60)

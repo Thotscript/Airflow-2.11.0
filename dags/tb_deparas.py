@@ -452,9 +452,6 @@ def create_calendario(df_dia_ajustado: pd.DataFrame) -> pd.DataFrame:
 
 
 def create_depara_casas():
-    """
-    Cria a tabela tb_depara_casas no MySQL
-    """
     print("\n🔗 Criando tabela de depara de casas...")
 
     sql_query = """
@@ -488,12 +485,22 @@ def create_depara_casas():
             ) AS SortedResults
             WHERE RowNum = 1
             GROUP BY id
-            
-            UNION 
-            
-            SELECT id, name, location_name, bedrooms_number, bathrooms_number, 
-                   condo_type_name, condo_type_group_name, renting_type, Administradora 
-            FROM tb_non_renting
+
+            UNION
+
+            SELECT DISTINCT
+                   r.unit_id AS id,
+                   NULL AS name,
+                   NULL AS location_name,
+                   NULL AS bedrooms_number,
+                   NULL AS bathrooms_number,
+                   NULL AS condo_type_name,
+                   NULL AS condo_type_group_name,
+                   NULL AS renting_type,
+                   r.Administradora
+            FROM tb_reservas r
+            LEFT JOIN tb_property_list_wordpress p ON r.unit_id = p.id
+            WHERE p.id IS NULL
         ) AS CombinedData
     ) AS A
     LEFT JOIN tb_property_list_wordpress AS B ON A.id = B.id
