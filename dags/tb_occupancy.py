@@ -2,7 +2,6 @@ import os
 import json
 import re
 import time
-import hashlib
 import numpy as np
 import pandas as pd
 import requests
@@ -28,16 +27,17 @@ DB_CFG = dict(
     database="ovh_bronze",
 )
 
-# Tabela atual consolidada por casa/mês
 TB_NAME = "tb_occupancy_houses"
-# Nova tabela detalhada por reserva (com confirmation_id)
-TB_DETAIL_NAME = "tb_occupancy_houses_detail"
 
-# ---- THROTTLE (Controle de Vazão) ----
+# ── Categorias de reserva a IGNORAR no cálculo de ocupação ──────────────────
+# Preencha com os confirmation_ids ou prefixos de reason que devem ser excluídos
+# Exemplo: {"Owner Block", "Maintenance"} — comparação case-insensitive no reason
+IGNORED_REASONS: set = set()   # ex: {"Owner Block", "Maintenance"}
+
+# ---- THROTTLE ---------------------------------------------------------------
 WINDOW_SEC = 60
 MAX_CALLS = 90
 _call_times = deque()
-
 
 def throttle():
     now = time.time()
@@ -49,12 +49,9 @@ def throttle():
         if sleep_for > 0:
             time.sleep(sleep_for)
 
-
-
 def post_with_retry(session, payload, retries=6, base_delay=1, timeout=60):
     delay = base_delay
     headers = {"Content-Type": "application/json"}
-    resp = None
     for attempt in range(retries):
         throttle()
         try:
@@ -70,10 +67,8 @@ def post_with_retry(session, payload, retries=6, base_delay=1, timeout=60):
             if resp.status_code in (429, 500, 502, 503, 504):
                 retry_after = resp.headers.get("Retry-After")
                 if retry_after:
-                    try:
-                        time.sleep(float(retry_after))
-                    except Exception:
-                        time.sleep(delay)
+                    try: time.sleep(float(retry_after))
+                    except: time.sleep(delay)
                 else:
                     time.sleep(delay)
                 delay = min(delay * 2, 30)
@@ -84,8 +79,6 @@ def post_with_retry(session, payload, retries=6, base_delay=1, timeout=60):
             time.sleep(delay)
             delay *= 2
     return resp
-
-
 
 def make_payload_calendar(unit_id: int, startdate: str, enddate: str):
     return {
@@ -99,38 +92,25 @@ def make_payload_calendar(unit_id: int, startdate: str, enddate: str):
         },
     }
 
-
-
 def extract_blocked_period(data):
-    if isinstance(data, list):
-        return data
-    if not isinstance(data, dict):
-        return []
-
+    if isinstance(data, list): return data
+    if not isinstance(data, dict): return []
     if "Response" in data:
         response_data = data.get("Response")
         if isinstance(response_data, dict):
             inner_data = response_data.get("data")
             if isinstance(inner_data, dict):
                 blocked = inner_data.get("blocked_period", [])
-                if blocked:
-                    return blocked
+                if blocked: return blocked
             elif isinstance(inner_data, list):
                 return inner_data
-
     data_field = data.get("data")
-    if isinstance(data_field, list):
-        return data_field
+    if isinstance(data_field, list): return data_field
     if isinstance(data_field, dict):
         blocked = data_field.get("blocked_period", [])
-        if blocked:
-            return blocked
-
-    if "status" in data and not data_field:
-        return []
+        if blocked: return blocked
+    if "status" in data and not data_field: return []
     return []
-
-
 
 def fetch_calendar(session: requests.Session, unit_id: int, startdate: str, enddate: str) -> list:
     payload = make_payload_calendar(unit_id, startdate, enddate)
@@ -138,11 +118,9 @@ def fetch_calendar(session: requests.Session, unit_id: int, startdate: str, endd
         resp = post_with_retry(session, payload)
         resp.raise_for_status()
         data = resp.json()
-
         if isinstance(data, list):
             print(f"[DEBUG] unit_id={unit_id}: API retornou lista com {len(data)} itens")
             return data
-
         if isinstance(data, dict):
             data_field = data.get("data")
             print(f"[DEBUG] unit_id={unit_id}: dict com 'data' = {type(data_field)}")
@@ -151,11 +129,9 @@ def fetch_calendar(session: requests.Session, unit_id: int, startdate: str, endd
             elif isinstance(data_field, dict):
                 bp = data_field.get("blocked_period", [])
                 print(f"[DEBUG] unit_id={unit_id}: data.blocked_period = {len(bp) if bp else 0} reservas")
-
         if isinstance(data, dict) and data.get("error"):
             print(f"[WARN] API erro para unit_id={unit_id}: {data.get('error')}")
             return []
-
         blocked = extract_blocked_period(data)
         print(f"[DEBUG] unit_id={unit_id}: extract_blocked_period retornou {len(blocked)} reservas")
         return blocked if blocked else []
@@ -164,39 +140,48 @@ def fetch_calendar(session: requests.Session, unit_id: int, startdate: str, endd
         return []
 
 
-
-def extract_confirmation_id(reason: str):
+def parse_confirmation_id(reason: str) -> str | None:
     """
     Extrai o confirmation_id do campo reason.
-    Ex.: 'Reservation #23622' -> '23622'
+    'Reservation #23622'  →  '23622'
+    Se não houver '#', devolve None (bloqueio sem reserva, ex: Owner Block).
     """
-    if not reason:
+    if not isinstance(reason, str):
         return None
-
-    text = str(reason).strip()
-    patterns = [
-        r"#\s*(\d+)\b",
-        r"\breservation\s*#?\s*(\d+)\b",
-        r"\bconfirmation\s*#?\s*(\d+)\b",
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, text, flags=re.IGNORECASE)
-        if match:
-            return match.group(1)
-    return None
+    match = re.search(r"#(\w+)", reason)
+    return match.group(1) if match else None
 
 
-
-def build_reservation_key(unit_id, month_str, reservation_startdate, reservation_enddate, reason, confirmation_id):
-    raw = f"{unit_id}|{month_str}|{reservation_startdate}|{reservation_enddate}|{reason}|{confirmation_id or ''}"
-    return hashlib.md5(raw.encode("utf-8")).hexdigest()
-
+def filter_blocked_by_reason(blocked: list, ignored_reasons: set) -> list:
+    """
+    Remove entradas cujo campo `reason` (case-insensitive) esteja em ignored_reasons.
+    Também remove entradas sem confirmation_id (sem '#') se o reason delas
+    estiver na lista de ignorados.
+    """
+    if not ignored_reasons:
+        return blocked
+    ignored_lower = {r.lower() for r in ignored_reasons}
+    filtered = []
+    for b in blocked:
+        reason = b.get("reason", "") or ""
+        if reason.lower() in ignored_lower:
+            print(f"[FILTER] Ignorando blocked: reason='{reason}'")
+            continue
+        filtered.append(b)
+    return filtered
 
 
 def calculate_occupancy_extended(blocked: list, startdate: str, today: date) -> dict:
     """
-    Mantém a visão consolidada mensal por casa.
+    Calcula ocupação mensal. Espera que `blocked` já esteja filtrado pelas
+    categorias a ignorar.
+
+    Colunas:
+    - days_elapsed        : dias do mês já passados até hoje (inclusive)
+    - days_occupied_past  : dias ocupados que já ocorreram (≤ hoje)
+    - days_occupied_future: dias ocupados que ainda vão ocorrer (> hoje)
+    - is_complete_month   : 1 se o mês inteiro já passou
+    - is_future_month     : 1 se o mês ainda não começou
     """
     mes_obj = datetime.strptime(startdate, "%m/%d/%Y")
     first_day = mes_obj.date()
@@ -208,7 +193,7 @@ def calculate_occupancy_extended(blocked: list, startdate: str, today: date) -> 
     dias_no_mes = last_day.day
 
     is_complete_month = 1 if last_day < today else 0
-    is_future_month = 1 if first_day > today else 0
+    is_future_month   = 1 if first_day > today else 0
 
     if is_future_month:
         days_elapsed = 0
@@ -219,30 +204,30 @@ def calculate_occupancy_extended(blocked: list, startdate: str, today: date) -> 
 
     if not blocked:
         return {
-            "occupancy_rate": 0.0,
-            "days_occupied": 0,
-            "days_in_month": dias_no_mes,
-            "days_elapsed": days_elapsed,
-            "days_occupied_past": 0,
-            "days_occupied_future": 0,
-            "is_complete_month": is_complete_month,
-            "is_future_month": is_future_month,
+            "occupancy_rate":      0.0,
+            "days_occupied":       0,
+            "days_in_month":       dias_no_mes,
+            "days_elapsed":        days_elapsed,
+            "days_occupied_past":  0,
+            "days_occupied_future":0,
+            "is_complete_month":   is_complete_month,
+            "is_future_month":     is_future_month,
         }
 
-    dias_ocupados_set = set()
-    dias_ocupados_past_set = set()
+    dias_ocupados_set        = set()
+    dias_ocupados_past_set   = set()
     dias_ocupados_future_set = set()
 
     for b in blocked:
         try:
             start = datetime.strptime(b["startdate"], "%m/%d/%Y").date()
-            end = datetime.strptime(b["enddate"], "%m/%d/%Y").date()
+            end   = datetime.strptime(b["enddate"],   "%m/%d/%Y").date()
 
             if end < first_day or start > last_day:
                 continue
 
             overlap_start = max(start, first_day)
-            overlap_end = min(end, last_day)
+            overlap_end   = min(end,   last_day)
 
             current = overlap_start
             while current <= overlap_end:
@@ -255,136 +240,21 @@ def calculate_occupancy_extended(blocked: list, startdate: str, today: date) -> 
         except Exception:
             continue
 
-    dias_ocupados = min(len(dias_ocupados_set), dias_no_mes)
-    days_occupied_past = min(len(dias_ocupados_past_set), dias_no_mes)
+    dias_ocupados        = min(len(dias_ocupados_set),        dias_no_mes)
+    days_occupied_past   = min(len(dias_ocupados_past_set),   dias_no_mes)
     days_occupied_future = min(len(dias_ocupados_future_set), dias_no_mes)
-    ocupacao = dias_ocupados / dias_no_mes
+    ocupacao             = dias_ocupados / dias_no_mes
 
     return {
-        "occupancy_rate": round(ocupacao, 4),
-        "days_occupied": dias_ocupados,
-        "days_in_month": dias_no_mes,
-        "days_elapsed": days_elapsed,
-        "days_occupied_past": days_occupied_past,
-        "days_occupied_future": days_occupied_future,
-        "is_complete_month": is_complete_month,
-        "is_future_month": is_future_month,
+        "occupancy_rate":      round(ocupacao, 4),
+        "days_occupied":       dias_ocupados,
+        "days_in_month":       dias_no_mes,
+        "days_elapsed":        days_elapsed,
+        "days_occupied_past":  days_occupied_past,
+        "days_occupied_future":days_occupied_future,
+        "is_complete_month":   is_complete_month,
+        "is_future_month":     is_future_month,
     }
-
-
-
-def calculate_occupancy_detail(blocked: list, unit_id: int, year: int, month: int, month_str: str, startdate: str, today: date) -> list:
-    """
-    Nova visão detalhada por reserva dentro do mês.
-    Gera 1 linha por reservation_key / confirmation_id / mês.
-    Isso permite cruzar com um de-para de categorias e depois re-agregar.
-    """
-    mes_obj = datetime.strptime(startdate, "%m/%d/%Y")
-    first_day = mes_obj.date()
-    if mes_obj.month == 12:
-        last_day = date(mes_obj.year + 1, 1, 1) - timedelta(days=1)
-    else:
-        last_day = date(mes_obj.year, mes_obj.month + 1, 1) - timedelta(days=1)
-
-    dias_no_mes = last_day.day
-    is_complete_month = 1 if last_day < today else 0
-    is_future_month = 1 if first_day > today else 0
-
-    if is_future_month:
-        days_elapsed = 0
-    elif is_complete_month:
-        days_elapsed = dias_no_mes
-    else:
-        days_elapsed = (today - first_day).days + 1
-
-    if not blocked:
-        return []
-
-    grouped = {}
-
-    for b in blocked:
-        try:
-            reservation_start = datetime.strptime(b["startdate"], "%m/%d/%Y").date()
-            reservation_end = datetime.strptime(b["enddate"], "%m/%d/%Y").date()
-            reason = str(b.get("reason") or "").strip()
-            confirmation_id = extract_confirmation_id(reason)
-
-            if reservation_end < first_day or reservation_start > last_day:
-                continue
-
-            overlap_start = max(reservation_start, first_day)
-            overlap_end = min(reservation_end, last_day)
-            reservation_key = build_reservation_key(
-                unit_id=unit_id,
-                month_str=month_str,
-                reservation_startdate=reservation_start.isoformat(),
-                reservation_enddate=reservation_end.isoformat(),
-                reason=reason,
-                confirmation_id=confirmation_id,
-            )
-
-            if reservation_key not in grouped:
-                grouped[reservation_key] = {
-                    "unit_id": unit_id,
-                    "year": year,
-                    "month": month,
-                    "month_str": month_str,
-                    "reservation_key": reservation_key,
-                    "confirmation_id": confirmation_id,
-                    "reason": reason,
-                    "reservation_startdate": reservation_start,
-                    "reservation_enddate": reservation_end,
-                    "days_in_month": dias_no_mes,
-                    "days_elapsed": days_elapsed,
-                    "is_complete_month": is_complete_month,
-                    "is_future_month": is_future_month,
-                    "_days": set(),
-                    "_days_past": set(),
-                    "_days_future": set(),
-                }
-
-            current = overlap_start
-            while current <= overlap_end:
-                grouped[reservation_key]["_days"].add(current)
-                if current <= today:
-                    grouped[reservation_key]["_days_past"].add(current)
-                else:
-                    grouped[reservation_key]["_days_future"].add(current)
-                current += timedelta(days=1)
-
-        except Exception as e:
-            print(f"[WARN] Falha ao processar bloqueio unit_id={unit_id} mês={month_str}: {e} | payload={b}")
-            continue
-
-    rows = []
-    for item in grouped.values():
-        days_occupied = min(len(item["_days"]), dias_no_mes)
-        days_occupied_past = min(len(item["_days_past"]), dias_no_mes)
-        days_occupied_future = min(len(item["_days_future"]), dias_no_mes)
-        occupancy_rate = round(days_occupied / dias_no_mes, 4) if dias_no_mes else 0.0
-
-        rows.append({
-            "unit_id": item["unit_id"],
-            "year": item["year"],
-            "month": item["month"],
-            "month_str": item["month_str"],
-            "reservation_key": item["reservation_key"],
-            "confirmation_id": item["confirmation_id"],
-            "reason": item["reason"],
-            "reservation_startdate": item["reservation_startdate"],
-            "reservation_enddate": item["reservation_enddate"],
-            "occupancy_rate": occupancy_rate,
-            "days_occupied": days_occupied,
-            "days_in_month": item["days_in_month"],
-            "days_elapsed": item["days_elapsed"],
-            "days_occupied_past": days_occupied_past,
-            "days_occupied_future": days_occupied_future,
-            "is_complete_month": item["is_complete_month"],
-            "is_future_month": item["is_future_month"],
-        })
-
-    return rows
-
 
 
 def get_active_houses():
@@ -392,128 +262,56 @@ def get_active_houses():
     try:
         query = "SELECT id FROM ovh_silver.tb_active_houses WHERE renting_type = 'RENTING'"
         df = pd.read_sql(query, conn)
-        return df["id"].tolist()
+        return df['id'].tolist()
     finally:
         conn.close()
 
-
-
-def create_occupancy_tables():
+def create_occupancy_table():
     conn = mysql.connector.connect(**DB_CFG)
     try:
         cur = conn.cursor()
-
-        # Tabela consolidada atual
-        create_sql_summary = f"""
+        create_sql = f"""
         CREATE TABLE IF NOT EXISTS `{TB_NAME}` (
             `unit_id`              BIGINT       NOT NULL,
             `year`                 INT          NOT NULL,
             `month`                INT          NOT NULL,
             `month_str`            VARCHAR(7)   NOT NULL,
+            `confirmation_id`      VARCHAR(50)  NULL     COMMENT 'ID da reserva sem o # (NULL = bloqueio sem reserva)',
+            `reason`               VARCHAR(255) NULL     COMMENT 'Campo reason original da API',
             `occupancy_rate`       DECIMAL(5,4) NULL,
             `days_occupied`        INT          NULL,
             `days_in_month`        INT          NULL,
-            `days_elapsed`         INT          NULL COMMENT 'Dias do mes ja passados ate hoje (inclusive). Use para denominador do YTD.',
-            `days_occupied_past`   INT          NULL COMMENT 'Dias ocupados que ja ocorreram (<= hoje). Numerador do YTD.',
-            `days_occupied_future` INT          NULL COMMENT 'Dias ocupados ainda no futuro (> hoje).',
-            `is_complete_month`    TINYINT(1)   NULL COMMENT '1 = mes inteiro ja passou.',
-            `is_future_month`      TINYINT(1)   NULL COMMENT '1 = mes ainda nao comecou.',
+            `days_elapsed`         INT          NULL     COMMENT 'Dias do mes ja passados ate hoje (inclusive).',
+            `days_occupied_past`   INT          NULL     COMMENT 'Dias ocupados que ja ocorreram (<= hoje). Numerador do YTD.',
+            `days_occupied_future` INT          NULL     COMMENT 'Dias ocupados ainda no futuro (> hoje).',
+            `is_complete_month`    TINYINT(1)   NULL     COMMENT '1 = mes inteiro ja passou.',
+            `is_future_month`      TINYINT(1)   NULL     COMMENT '1 = mes ainda nao comecou.',
             `extraction_date`      DATETIME     NOT NULL,
             PRIMARY KEY (`unit_id`, `year`, `month`, `extraction_date`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """
-
-        # Nova tabela detalhada por reserva
-        create_sql_detail = f"""
-        CREATE TABLE IF NOT EXISTS `{TB_DETAIL_NAME}` (
-            `unit_id`               BIGINT       NOT NULL,
-            `year`                  INT          NOT NULL,
-            `month`                 INT          NOT NULL,
-            `month_str`             VARCHAR(7)   NOT NULL,
-            `reservation_key`       VARCHAR(32)  NOT NULL,
-            `confirmation_id`       VARCHAR(50)  NULL,
-            `reason`                VARCHAR(255) NULL,
-            `reservation_startdate` DATE         NULL,
-            `reservation_enddate`   DATE         NULL,
-            `occupancy_rate`        DECIMAL(5,4) NULL,
-            `days_occupied`         INT          NULL,
-            `days_in_month`         INT          NULL,
-            `days_elapsed`          INT          NULL,
-            `days_occupied_past`    INT          NULL,
-            `days_occupied_future`  INT          NULL,
-            `is_complete_month`     TINYINT(1)   NULL,
-            `is_future_month`       TINYINT(1)   NULL,
-            `extraction_date`       DATETIME     NOT NULL,
-            PRIMARY KEY (`unit_id`, `year`, `month`, `reservation_key`, `extraction_date`),
-            KEY `idx_confirmation_id` (`confirmation_id`),
-            KEY `idx_reason` (`reason`),
-            KEY `idx_month_str` (`month_str`)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-        """
-
-        cur.execute(create_sql_summary)
-        cur.execute(create_sql_detail)
+        cur.execute(create_sql)
         conn.commit()
     finally:
         conn.close()
 
-
-
 def save_occupancy_data(df: pd.DataFrame):
-    if df.empty:
-        return
-
+    if df.empty: return
     conn = mysql.connector.connect(**DB_CFG)
     try:
         cur = conn.cursor()
         insert_sql = f"""
         INSERT INTO `{TB_NAME}`
             (unit_id, year, month, month_str,
+             confirmation_id, reason,
              occupancy_rate, days_occupied, days_in_month,
              days_elapsed, days_occupied_past, days_occupied_future,
              is_complete_month, is_future_month,
              extraction_date)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON DUPLICATE KEY UPDATE
-            occupancy_rate       = VALUES(occupancy_rate),
-            days_occupied        = VALUES(days_occupied),
-            days_in_month        = VALUES(days_in_month),
-            days_elapsed         = VALUES(days_elapsed),
-            days_occupied_past   = VALUES(days_occupied_past),
-            days_occupied_future = VALUES(days_occupied_future),
-            is_complete_month    = VALUES(is_complete_month),
-            is_future_month      = VALUES(is_future_month),
-            extraction_date      = VALUES(extraction_date)
-        """
-        cur.executemany(insert_sql, [tuple(r) for r in df.itertuples(index=False, name=None)])
-        conn.commit()
-    finally:
-        conn.close()
-
-
-
-def save_occupancy_detail_data(df: pd.DataFrame):
-    if df.empty:
-        return
-
-    conn = mysql.connector.connect(**DB_CFG)
-    try:
-        cur = conn.cursor()
-        insert_sql = f"""
-        INSERT INTO `{TB_DETAIL_NAME}`
-            (unit_id, year, month, month_str,
-             reservation_key, confirmation_id, reason,
-             reservation_startdate, reservation_enddate,
-             occupancy_rate, days_occupied, days_in_month,
-             days_elapsed, days_occupied_past, days_occupied_future,
-             is_complete_month, is_future_month,
-             extraction_date)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
             confirmation_id      = VALUES(confirmation_id),
             reason               = VALUES(reason),
-            reservation_startdate= VALUES(reservation_startdate),
-            reservation_enddate  = VALUES(reservation_enddate),
             occupancy_rate       = VALUES(occupancy_rate),
             days_occupied        = VALUES(days_occupied),
             days_in_month        = VALUES(days_in_month),
@@ -529,13 +327,10 @@ def save_occupancy_detail_data(df: pd.DataFrame):
     finally:
         conn.close()
 
-
-
 def main():
-    create_occupancy_tables()
+    create_occupancy_table()
     unit_ids = get_active_houses()
-    if not unit_ids:
-        return
+    if not unit_ids: return
 
     today = date.today()
 
@@ -548,66 +343,71 @@ def main():
             last_day = (datetime(2026, month + 1, 1) - timedelta(days=1)).day
             extended_end = datetime(2026, month, last_day) + timedelta(days=10)
             enddate = extended_end.strftime("%m/%d/%Y")
-
         months_2026.append({
-            "startdate": startdate,
-            "enddate": enddate,
-            "year": 2026,
-            "month": month,
-            "month_str": f"2026-{month:02d}",
+            'startdate': startdate,
+            'enddate':   enddate,
+            'year':      2026,
+            'month':     month,
+            'month_str': f"2026-{month:02d}",
         })
 
     session = requests.Session()
-    summary_results = []
-    detail_results = []
+    results = []
     extraction_date = datetime.now()
 
     for unit_id in unit_ids:
         print(f"\n=== Processando unit_id: {unit_id} ===")
         for month_info in months_2026:
-            blocked = fetch_calendar(session, unit_id, month_info["startdate"], month_info["enddate"])
+            blocked_raw = fetch_calendar(session, unit_id, month_info['startdate'], month_info['enddate'])
 
-            # 1) mantém a tabela consolidada atual
-            occ = calculate_occupancy_extended(blocked, month_info["startdate"], today)
-            summary_results.append({
-                "unit_id": unit_id,
-                "year": month_info["year"],
-                "month": month_info["month"],
-                "month_str": month_info["month_str"],
-                "occupancy_rate": occ["occupancy_rate"],
-                "days_occupied": occ["days_occupied"],
-                "days_in_month": occ["days_in_month"],
-                "days_elapsed": occ["days_elapsed"],
-                "days_occupied_past": occ["days_occupied_past"],
-                "days_occupied_future": occ["days_occupied_future"],
-                "is_complete_month": occ["is_complete_month"],
-                "is_future_month": occ["is_future_month"],
-                "extraction_date": extraction_date,
+            # ── Extrai os reasons únicos do mês para logging ─────────────────
+            reasons_found = {b.get("reason", "") for b in blocked_raw if b.get("reason")}
+            if reasons_found:
+                print(f"  [REASONS] unit_id={unit_id} {month_info['month_str']}: {reasons_found}")
+
+            # ── Filtra categorias a ignorar ──────────────────────────────────
+            blocked = filter_blocked_by_reason(blocked_raw, IGNORED_REASONS)
+
+            # ── Agrega confirmation_ids do mês (para referência cruzada) ─────
+            confirmation_ids = []
+            for b in blocked:
+                cid = parse_confirmation_id(b.get("reason", ""))
+                if cid:
+                    confirmation_ids.append(cid)
+            # Armazena como CSV de IDs; NULL se não houver nenhum
+            confirmation_id_str = ",".join(sorted(set(confirmation_ids))) if confirmation_ids else None
+
+            # ── Armazena o reason raw concatenado para auditoria ─────────────
+            reasons_str = " | ".join(
+                b.get("reason", "") for b in blocked if b.get("reason")
+            ) or None
+
+            occ = calculate_occupancy_extended(blocked, month_info['startdate'], today)
+
+            results.append({
+                'unit_id':              unit_id,
+                'year':                 month_info['year'],
+                'month':                month_info['month'],
+                'month_str':            month_info['month_str'],
+                'confirmation_id':      confirmation_id_str,   # ← NOVO
+                'reason':               reasons_str,           # ← NOVO
+                'occupancy_rate':       occ['occupancy_rate'],
+                'days_occupied':        occ['days_occupied'],
+                'days_in_month':        occ['days_in_month'],
+                'days_elapsed':         occ['days_elapsed'],
+                'days_occupied_past':   occ['days_occupied_past'],
+                'days_occupied_future': occ['days_occupied_future'],
+                'is_complete_month':    occ['is_complete_month'],
+                'is_future_month':      occ['is_future_month'],
+                'extraction_date':      extraction_date,
             })
-
-            # 2) nova tabela detalhada com confirmation_id
-            detail_rows = calculate_occupancy_detail(
-                blocked=blocked,
-                unit_id=unit_id,
-                year=month_info["year"],
-                month=month_info["month"],
-                month_str=month_info["month_str"],
-                startdate=month_info["startdate"],
-                today=today,
-            )
-            for row in detail_rows:
-                row["extraction_date"] = extraction_date
-            detail_results.extend(detail_rows)
-
             print(
                 f"  Casa {unit_id} | {month_info['month_str']} | "
-                f"Ocupação consolidada: {occ['occupancy_rate']:.2%} ({occ['days_occupied']}/{occ['days_in_month']} dias) | "
-                f"Reservas detalhadas: {len(detail_rows)}"
+                f"Ocupação: {occ['occupancy_rate']:.2%} ({occ['days_occupied']}/{occ['days_in_month']} dias) | "
+                f"IDs: {confirmation_id_str}"
             )
 
-    save_occupancy_data(pd.DataFrame(summary_results))
-    save_occupancy_detail_data(pd.DataFrame(detail_results))
-
+    save_occupancy_data(pd.DataFrame(results))
 
 SP_TZ = pendulum.timezone("America/Sao_Paulo")
 with DAG(
