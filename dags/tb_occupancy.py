@@ -270,21 +270,19 @@ def create_occupancy_table():
     conn = mysql.connector.connect(**DB_CFG)
     try:
         cur = conn.cursor()
-
-        # Cria a tabela se não existir (com todas as colunas)
         create_sql = f"""
         CREATE TABLE IF NOT EXISTS `{TB_NAME}` (
             `unit_id`              BIGINT       NOT NULL,
             `year`                 INT          NOT NULL,
             `month`                INT          NOT NULL,
             `month_str`            VARCHAR(7)   NOT NULL,
-            `confirmation_id`      VARCHAR(500) NULL     COMMENT 'IDs das reservas do mes sem o # separados por virgula',
-            `reason`               TEXT         NULL     COMMENT 'Campo reason original da API concatenado',
+            `confirmation_id`      VARCHAR(50)  NULL     COMMENT 'ID da reserva sem o # (NULL = bloqueio sem reserva)',
+            `reason`               VARCHAR(255) NULL     COMMENT 'Campo reason original da API',
             `occupancy_rate`       DECIMAL(5,4) NULL,
             `days_occupied`        INT          NULL,
             `days_in_month`        INT          NULL,
             `days_elapsed`         INT          NULL     COMMENT 'Dias do mes ja passados ate hoje (inclusive).',
-            `days_occupied_past`   INT          NULL     COMMENT 'Dias ocupados que ja ocorreram (<= hoje).',
+            `days_occupied_past`   INT          NULL     COMMENT 'Dias ocupados que ja ocorreram (<= hoje). Numerador do YTD.',
             `days_occupied_future` INT          NULL     COMMENT 'Dias ocupados ainda no futuro (> hoje).',
             `is_complete_month`    TINYINT(1)   NULL     COMMENT '1 = mes inteiro ja passou.',
             `is_future_month`      TINYINT(1)   NULL     COMMENT '1 = mes ainda nao comecou.',
@@ -293,30 +291,6 @@ def create_occupancy_table():
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """
         cur.execute(create_sql)
-        conn.commit()
-
-        # Adiciona colunas novas se a tabela já existia sem elas (idempotente)
-        migrations = [
-            ("confirmation_id", "ALTER TABLE `{tb}` ADD COLUMN `confirmation_id` VARCHAR(500) NULL COMMENT 'IDs das reservas do mes sem o # separados por virgula' AFTER `month_str`"),
-            ("reason",          "ALTER TABLE `{tb}` ADD COLUMN `reason` TEXT NULL COMMENT 'Campo reason original da API concatenado' AFTER `confirmation_id`"),
-            ("days_elapsed",         "ALTER TABLE `{tb}` ADD COLUMN `days_elapsed` INT NULL AFTER `days_in_month`"),
-            ("days_occupied_past",   "ALTER TABLE `{tb}` ADD COLUMN `days_occupied_past` INT NULL AFTER `days_elapsed`"),
-            ("days_occupied_future", "ALTER TABLE `{tb}` ADD COLUMN `days_occupied_future` INT NULL AFTER `days_occupied_past`"),
-            ("is_complete_month",    "ALTER TABLE `{tb}` ADD COLUMN `is_complete_month` TINYINT(1) NULL AFTER `days_occupied_future`"),
-            ("is_future_month",      "ALTER TABLE `{tb}` ADD COLUMN `is_future_month` TINYINT(1) NULL AFTER `is_complete_month`"),
-        ]
-
-        # Descobre quais colunas já existem
-        cur.execute(f"SHOW COLUMNS FROM `{TB_NAME}`")
-        existing_cols = {row[0] for row in cur.fetchall()}
-
-        for col_name, alter_sql in migrations:
-            if col_name not in existing_cols:
-                cur.execute(alter_sql.format(tb=TB_NAME))
-                print(f"[MIGRATE] Coluna `{col_name}` adicionada em `{TB_NAME}`")
-            else:
-                print(f"[MIGRATE] Coluna `{col_name}` já existe — pulando")
-
         conn.commit()
     finally:
         conn.close()
