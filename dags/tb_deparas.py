@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import requests
 import json
 import time
+from airflow.models import Variable
 
 from airflow import DAG
 from airflow.decorators import task
@@ -295,8 +296,8 @@ def get_property_data_from_streamline(df_administradora: pd.DataFrame) -> pd.Dat
     property_list_total = pd.DataFrame()
 
     # Tokens fixos (como você colocou)
-    TOKEN_KEY = "3ef223d3bbf7086cfb86df7e98d6e5d2"
-    TOKEN_SECRET = "a88d05b895affb815cc8a4d96670698ee486ea30"
+    TOKEN_KEY = Variable.get("STREAMLINE_TOKEN_KEY")
+    TOKEN_SECRET = Variable.get("STREAMLINE_TOKEN_SECRET")
 
     for idx, row in df_administradora.iterrows():
         try:
