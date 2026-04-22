@@ -2,7 +2,7 @@ import pandas as pd
 import mysql.connector
 import pendulum
 
-from datetime import datetime, timedelta, date
+from datetime import datetime
 from airflow import DAG
 from airflow.decorators import task
 
@@ -13,12 +13,12 @@ DB_CFG = dict(
     database="ovh_bronze",
 )
 
-SOURCE_SCHEMA = "ovh_silver"
-DEST_SCHEMA   = "ovh_silver"
+SOURCE_SCHEMA    = "ovh_silver"
+DEST_SCHEMA      = "ovh_silver"
 
-TB_RESERVAS    = "tb_reservas"
+TB_RESERVAS      = "tb_reservas"
 TB_ACTIVE_HOUSES = "tb_active_houses"
-TB_NAME        = "tb_occupancy_reservation_day"
+TB_NAME          = "tb_occupancy_reservation_day"
 
 TARGET_YEAR = 2026
 
@@ -27,6 +27,8 @@ def create_occupancy_table():
     conn = mysql.connector.connect(**DB_CFG)
     try:
         cur = conn.cursor()
+        # Sem PRIMARY KEY em (unit_id, confirmation_id, occupied_date)
+        # para permitir múltiplas linhas com a mesma combinação (append puro)
         create_sql = f"""
         CREATE TABLE IF NOT EXISTS `{DEST_SCHEMA}`.`{TB_NAME}` (
             `unit_id`         BIGINT        NOT NULL,
@@ -41,16 +43,15 @@ def create_occupancy_table():
             `enddate`         DATE          NOT NULL,
             `rate`            DECIMAL(12,2) NULL     COMMENT 'price_nightly / days_number',
             `extraction_date` DATETIME      NOT NULL,
-            PRIMARY KEY (`unit_id`, `confirmation_id`, `occupied_date`),
             KEY `idx_confirmation_id` (`confirmation_id`),
             KEY `idx_occupied_date`   (`occupied_date`),
             KEY `idx_unit_date`       (`unit_id`, `occupied_date`),
-            KEY `idx_month_str`       (`month_str`)
+            KEY `idx_month_str`       (`month_str`),
+            KEY `idx_extraction_date` (`extraction_date`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """
         cur.execute(create_sql)
 
-        # Migração: adiciona coluna rate se a tabela já existia sem ela
         cur.execute(f"SHOW COLUMNS FROM `{DEST_SCHEMA}`.`{TB_NAME}`")
         existing_cols = {row[0] for row in cur.fetchall()}
         if "rate" not in existing_cols:
@@ -142,37 +143,7 @@ def build_daily_occupancy_rows(df_reservas: pd.DataFrame) -> pd.DataFrame:
                 "extraction_date": extraction_date,
             })
 
-    df_days = pd.DataFrame(rows)
-
-    if not df_days.empty:
-        df_days = df_days.drop_duplicates(
-            subset=["unit_id", "confirmation_id", "occupied_date"],
-            keep="last"
-        )
-
-    return df_days
-
-
-def clear_target_year():
-    conn = mysql.connector.connect(**DB_CFG)
-    try:
-        cur = conn.cursor()
-        delete_sql = f"""
-            DELETE FROM `{DEST_SCHEMA}`.`{TB_NAME}`
-            WHERE confirmation_id IN (
-                SELECT CAST(confirmation_id AS CHAR)
-                FROM `{SOURCE_SCHEMA}`.`{TB_RESERVAS}`
-                WHERE DATE(enddate)   >= %s
-                  AND DATE(startdate) <= %s
-            )
-        """
-        year_start = f"{TARGET_YEAR}-01-01"
-        year_end   = f"{TARGET_YEAR}-12-31"
-        cur.execute(delete_sql, (year_start, year_end))
-        conn.commit()
-        print(f"[INFO] Dados de reservas do período {year_start} a {year_end} removidos de {DEST_SCHEMA}.{TB_NAME}")
-    finally:
-        conn.close()
+    return pd.DataFrame(rows)
 
 
 def save_occupancy_data(df: pd.DataFrame):
@@ -214,7 +185,6 @@ def main():
     df_daily = build_daily_occupancy_rows(df_reservas)
     print(f"[INFO] Linhas diárias geradas: {len(df_daily)}")
 
-    clear_target_year()
     save_occupancy_data(df_daily)
     print("[INFO] Processo concluído com sucesso.")
 
