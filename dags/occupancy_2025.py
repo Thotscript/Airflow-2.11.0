@@ -2,7 +2,7 @@ import pandas as pd
 import mysql.connector
 import pendulum
 
-from datetime import datetime
+from datetime import datetime, date
 from airflow import DAG
 from airflow.decorators import task
 
@@ -99,7 +99,7 @@ def fetch_reservations(target_year: int):
         conn.close()
 
 
-def build_daily_occupancy_rows(df_reservas: pd.DataFrame) -> pd.DataFrame:
+def build_daily_occupancy_rows(df_reservas: pd.DataFrame, target_year: int) -> pd.DataFrame:
     if df_reservas.empty:
         return pd.DataFrame(columns=[
             "unit_id", "confirmation_id", "occupied_date", "days",
@@ -109,6 +109,9 @@ def build_daily_occupancy_rows(df_reservas: pd.DataFrame) -> pd.DataFrame:
 
     extraction_date = datetime.now()
     rows = []
+
+    year_start = date(target_year, 1, 1)
+    year_end   = date(target_year, 12, 31)
 
     for row in df_reservas.itertuples(index=False):
         unit_id         = int(row.unit_id)
@@ -120,7 +123,13 @@ def build_daily_occupancy_rows(df_reservas: pd.DataFrame) -> pd.DataFrame:
         if enddate < startdate:
             continue
 
-        for occupied_date in pd.date_range(start=startdate, end=enddate, freq="D"):
+        occ_start = max(startdate, year_start)
+        occ_end   = min(enddate, year_end)
+
+        if occ_end < occ_start:
+            continue
+
+        for occupied_date in pd.date_range(start=occ_start, end=occ_end, freq="D"):
             occupied_date = occupied_date.date()
             rows.append({
                 "unit_id":         unit_id,
@@ -137,7 +146,14 @@ def build_daily_occupancy_rows(df_reservas: pd.DataFrame) -> pd.DataFrame:
                 "extraction_date": extraction_date,
             })
 
-    return pd.DataFrame(rows)
+    df_daily = pd.DataFrame(rows)
+
+    if not df_daily.empty:
+        df_daily = df_daily.drop_duplicates(
+            subset=["unit_id", "confirmation_id", "occupied_date"]
+        )
+
+    return df_daily
 
 
 def replace_only_target_year(df: pd.DataFrame, target_year: int):
@@ -186,7 +202,7 @@ def main():
         replace_only_target_year(pd.DataFrame(), TARGET_YEAR)
         return
 
-    df_daily = build_daily_occupancy_rows(df_reservas)
+    df_daily = build_daily_occupancy_rows(df_reservas, TARGET_YEAR)
     print(f"[INFO] Linhas diárias geradas: {len(df_daily)}")
 
     replace_only_target_year(df_daily, TARGET_YEAR)
