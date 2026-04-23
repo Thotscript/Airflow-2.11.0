@@ -150,12 +150,14 @@ def save_occupancy_data(df: pd.DataFrame):
     if df.empty:
         print("[INFO] Nenhum dado para salvar.")
         return
-
+    
     conn = mysql.connector.connect(**DB_CFG)
     try:
         cur = conn.cursor()
+        # Mudamos de INSERT INTO para INSERT IGNORE INTO
+        # Isso evita o erro de duplicata, pulando o que já existe
         insert_sql = f"""
-        INSERT INTO `{DEST_SCHEMA}`.`{TB_NAME}`
+        INSERT IGNORE INTO `{DEST_SCHEMA}`.`{TB_NAME}`
         (
             unit_id, confirmation_id, occupied_date, days,
             year, month, day, month_str,
@@ -166,7 +168,7 @@ def save_occupancy_data(df: pd.DataFrame):
         data = [tuple(r) for r in df.itertuples(index=False, name=None)]
         cur.executemany(insert_sql, data)
         conn.commit()
-        print(f"[INFO] {len(data)} linhas inseridas em {DEST_SCHEMA}.{TB_NAME}")
+        print(f"[INFO] {len(data)} linhas processadas (novas inseridas) em {DEST_SCHEMA}.{TB_NAME}")
     finally:
         conn.close()
 
