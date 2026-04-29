@@ -135,23 +135,6 @@ def fetch_calendar(session: requests.Session, unit_id: int, startdate: str, endd
 
 
 def calculate_occupancy_extended(blocked: list, startdate: str, today: date) -> dict:
-    """
-    Calcula ocupação mensal com colunas extras para YTD e Full Year no Power BI.
-
-    Colunas novas:
-    - days_elapsed       : dias do mês já passados até hoje (inclusive)
-                           mês passado  → days_in_month
-                           mês atual    → dia de hoje dentro do mês
-                           mês futuro   → 0
-    - days_occupied_past : dias ocupados que já ocorreram (≤ hoje)
-    - days_occupied_future: dias ocupados que ainda vão ocorrer (> hoje)
-    - is_complete_month  : 1 se o mês inteiro já passou, 0 caso contrário
-    - is_future_month    : 1 se o mês ainda não começou, 0 caso contrário
-
-    Fórmulas Power BI:
-      YTD Occupancy   = DIVIDE(SUM(days_occupied_past), SUM(days_elapsed))
-      Full Year       = DIVIDE(SUM(days_occupied),      SUM(days_in_month))
-    """
     mes_obj = datetime.strptime(startdate, "%m/%d/%Y")
     first_day = mes_obj.date()
     if mes_obj.month == 12:
@@ -161,17 +144,14 @@ def calculate_occupancy_extended(blocked: list, startdate: str, today: date) -> 
 
     dias_no_mes = last_day.day
 
-    # ── Flags de status do mês ──────────────────────────────────────────────
     is_complete_month = 1 if last_day < today else 0
     is_future_month   = 1 if first_day > today else 0
 
-    # ── days_elapsed: quantos dias do mês já "passaram" ─────────────────────
     if is_future_month:
         days_elapsed = 0
     elif is_complete_month:
         days_elapsed = dias_no_mes
     else:
-        # Mês em curso: conta do dia 1 até hoje (inclusive)
         days_elapsed = (today - first_day).days + 1
 
     if not blocked:
@@ -265,32 +245,39 @@ def create_occupancy_table():
     finally:
         conn.close()
 
+# ── MODIFICADO: INSERT IGNORE para preservar histórico sem sobrescrever ──────
 def save_occupancy_data(df: pd.DataFrame):
     if df.empty: return
     conn = mysql.connector.connect(**DB_CFG)
     try:
         cur = conn.cursor()
+
+        # Verifica se já existe snapshot para este extraction_date (dia)
+        extraction_day = df["extraction_date"].iloc[0].date()
+        cur.execute(f"""
+            SELECT COUNT(*) FROM `{TB_NAME}`
+            WHERE DATE(extraction_date) = %s
+        """, (extraction_day,))
+        count = cur.fetchone()[0]
+
+        if count > 0:
+            print(f"[INFO] Snapshot de 2025 para {extraction_day} já existe ({count} linhas). Pulando inserção.")
+            return
+
+        # INSERT IGNORE: a PK (unit_id, year, month, extraction_date) garante
+        # que não haverá duplicatas mesmo se a DAG rodar mais de uma vez no dia
         insert_sql = f"""
-        INSERT INTO `{TB_NAME}`
+        INSERT IGNORE INTO `{TB_NAME}`
             (unit_id, year, month, month_str,
              occupancy_rate, days_occupied, days_in_month,
              days_elapsed, days_occupied_past, days_occupied_future,
              is_complete_month, is_future_month,
              extraction_date)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON DUPLICATE KEY UPDATE
-            occupancy_rate       = VALUES(occupancy_rate),
-            days_occupied        = VALUES(days_occupied),
-            days_in_month        = VALUES(days_in_month),
-            days_elapsed         = VALUES(days_elapsed),
-            days_occupied_past   = VALUES(days_occupied_past),
-            days_occupied_future = VALUES(days_occupied_future),
-            is_complete_month    = VALUES(is_complete_month),
-            is_future_month      = VALUES(is_future_month),
-            extraction_date      = VALUES(extraction_date)
         """
         cur.executemany(insert_sql, [tuple(r) for r in df.itertuples(index=False, name=None)])
         conn.commit()
+        print(f"[INFO] {cur.rowcount} linhas inseridas (snapshot 2025 - {extraction_day}).")
     finally:
         conn.close()
 
@@ -302,9 +289,6 @@ def main_2025():
         print("[INFO] Nenhuma casa ativa encontrada.")
         return
 
-    # 2025 já passou inteiro → today é fixo no último dia do ano para o backfill
-    # Mantemos date.today() real para que days_elapsed seja correto:
-    # todos os meses de 2025 serão is_complete_month=1 e days_elapsed=days_in_month
     today = date.today()
 
     months_2025 = []
@@ -357,7 +341,7 @@ def main_2025():
             )
 
     save_occupancy_data(pd.DataFrame(results))
-    print(f"\n[INFO] Concluído. {len(results)} registros salvos/atualizados.")
+    print(f"\n[INFO] Concluído. {len(results)} registros processados.")
 
 
 SP_TZ = pendulum.timezone("America/Sao_Paulo")
@@ -365,7 +349,7 @@ SP_TZ = pendulum.timezone("America/Sao_Paulo")
 with DAG(
     dag_id="OVH-tb_occupancy_houses_2025_backfill",
     start_date=pendulum.datetime(2025, 12, 19, 8, 0, tz=SP_TZ),
-    schedule="@once",
+    schedule="0 5 * * *",
     catchup=False,
     tags=["Tabelas - OVH", "Ocupacao", "Backfill"],
 ) as dag:

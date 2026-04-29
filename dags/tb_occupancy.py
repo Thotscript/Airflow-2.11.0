@@ -27,8 +27,6 @@ def create_occupancy_table():
     conn = mysql.connector.connect(**DB_CFG)
     try:
         cur = conn.cursor()
-        # Sem PRIMARY KEY em (unit_id, confirmation_id, occupied_date)
-        # para permitir múltiplas linhas com a mesma combinação (append puro)
         create_sql = f"""
         CREATE TABLE IF NOT EXISTS `{DEST_SCHEMA}`.`{TB_NAME}` (
             `unit_id`         BIGINT        NOT NULL,
@@ -146,6 +144,7 @@ def build_daily_occupancy_rows(df_reservas: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+# ── MODIFICADO: append puro com guard de snapshot por dia ────────────────────
 def save_occupancy_data(df: pd.DataFrame):
     if df.empty:
         print("[INFO] Nenhum dado para salvar.")
@@ -154,6 +153,24 @@ def save_occupancy_data(df: pd.DataFrame):
     conn = mysql.connector.connect(**DB_CFG)
     try:
         cur = conn.cursor()
+
+        # Pega a extraction_date do df (é a mesma para todas as linhas)
+        extraction_date = df["extraction_date"].iloc[0]
+        # Trunca para o dia — evita duplicar se rodar 2x no mesmo dia
+        extraction_day = extraction_date.date()
+
+        # Verifica se já tem snapshot deste dia — se sim, pula
+        cur.execute(f"""
+            SELECT COUNT(*) FROM `{DEST_SCHEMA}`.`{TB_NAME}`
+            WHERE DATE(extraction_date) = %s
+        """, (extraction_day,))
+        count = cur.fetchone()[0]
+
+        if count > 0:
+            print(f"[INFO] Snapshot de {extraction_day} já existe ({count} linhas). Pulando inserção.")
+            return
+
+        # Append puro: cada dia de execução gera um snapshot novo no histórico
         insert_sql = f"""
         INSERT INTO `{DEST_SCHEMA}`.`{TB_NAME}`
         (
@@ -166,7 +183,7 @@ def save_occupancy_data(df: pd.DataFrame):
         data = [tuple(r) for r in df.itertuples(index=False, name=None)]
         cur.executemany(insert_sql, data)
         conn.commit()
-        print(f"[INFO] {len(data)} linhas inseridas em {DEST_SCHEMA}.{TB_NAME}")
+        print(f"[INFO] {len(data)} linhas inseridas em {DEST_SCHEMA}.{TB_NAME} (snapshot {extraction_day})")
     finally:
         conn.close()
 
