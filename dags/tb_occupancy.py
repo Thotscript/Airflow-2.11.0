@@ -213,7 +213,7 @@ with DAG(
     tags=["Tabelas - OVH", "Ocupacao", "Reservas", "Diaria"],
 ) as dag:
 
-    @task(retries=4, retry_exponential_backoff=True)
+    @task(retries=1, retry_exponential_backoff=True)
     def calculate_occupancy_reservation_day():
         main()
 
