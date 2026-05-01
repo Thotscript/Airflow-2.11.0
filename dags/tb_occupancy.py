@@ -154,12 +154,9 @@ def save_occupancy_data(df: pd.DataFrame):
     try:
         cur = conn.cursor()
 
-        # Pega a extraction_date do df (é a mesma para todas as linhas)
         extraction_date = df["extraction_date"].iloc[0]
-        # Trunca para o dia — evita duplicar se rodar 2x no mesmo dia
         extraction_day = extraction_date.date()
 
-        # Verifica se já tem snapshot deste dia — se sim, pula
         cur.execute(f"""
             SELECT COUNT(*) FROM `{DEST_SCHEMA}`.`{TB_NAME}`
             WHERE DATE(extraction_date) = %s
@@ -170,9 +167,9 @@ def save_occupancy_data(df: pd.DataFrame):
             print(f"[INFO] Snapshot de {extraction_day} já existe ({count} linhas). Pulando inserção.")
             return
 
-        # Append puro: cada dia de execução gera um snapshot novo no histórico
+        # ── MODIFICADO: INSERT IGNORE evita erro em duplicatas sem apagar dados ──
         insert_sql = f"""
-        INSERT INTO `{DEST_SCHEMA}`.`{TB_NAME}`
+        INSERT IGNORE INTO `{DEST_SCHEMA}`.`{TB_NAME}`
         (
             unit_id, confirmation_id, occupied_date, days,
             year, month, day, month_str,
@@ -183,7 +180,7 @@ def save_occupancy_data(df: pd.DataFrame):
         data = [tuple(r) for r in df.itertuples(index=False, name=None)]
         cur.executemany(insert_sql, data)
         conn.commit()
-        print(f"[INFO] {len(data)} linhas inseridas em {DEST_SCHEMA}.{TB_NAME} (snapshot {extraction_day})")
+        print(f"[INFO] {cur.rowcount} linhas inseridas em {DEST_SCHEMA}.{TB_NAME} (snapshot {extraction_day})")
     finally:
         conn.close()
 
