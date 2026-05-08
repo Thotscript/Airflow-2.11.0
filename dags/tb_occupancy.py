@@ -32,9 +32,7 @@ TB_ACTIVE_HOUSES             = "tb_active_houses"
 TB_OCCUPANCY_HOUSES          = "tb_occupancy_houses"
 TB_OCCUPANCY_RESERVATION_DAY = "tb_occupancy_reservation_day"
 
-# Anos processados na ocupação por API (calendário de bloqueios)
-TARGET_YEARS_HOUSES = [2025, 2026]
-# Ano processado na ocupação por reserva (diária)
+TARGET_YEARS_HOUSES     = [2025, 2026]
 TARGET_YEAR_RESERVATION = 2026
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -106,12 +104,10 @@ def get_active_houses():
 
 def append_snapshot(table_full_name: str, insert_sql: str, df: pd.DataFrame):
     """
-    Estratégia de APPEND DIÁRIO:
-      1. Mantém intactos todos os snapshots de dias anteriores (HISTÓRICO).
-      2. Apaga APENAS as linhas cuja DATE(extraction_date) = hoje, se houver.
-         Isso permite reexecutar a DAG no mesmo dia e atualizar o snapshot
-         do dia corrente sem perder histórico.
-      3. Insere as novas linhas com extraction_date = agora.
+    APPEND DIÁRIO:
+      - Mantém intactos snapshots de dias anteriores (HISTÓRICO).
+      - Apaga APENAS as linhas com DATE(extraction_date) = hoje, se houver.
+      - Insere o snapshot atualizado do dia.
     """
     if df.empty:
         print(f"[INFO] {table_full_name}: nenhum dado para salvar.")
@@ -123,7 +119,6 @@ def append_snapshot(table_full_name: str, insert_sql: str, df: pd.DataFrame):
     try:
         cur = conn.cursor()
 
-        # 1) Apaga somente o snapshot do dia atual (se existir)
         cur.execute(
             f"DELETE FROM {table_full_name} WHERE DATE(extraction_date) = %s",
             (extraction_day,),
@@ -132,7 +127,6 @@ def append_snapshot(table_full_name: str, insert_sql: str, df: pd.DataFrame):
         if deleted > 0:
             print(f"[INFO] {table_full_name}: {deleted} linhas do dia {extraction_day} removidas para reprocesso.")
 
-        # 2) Insere o snapshot atualizado do dia
         data = [tuple(r) for r in df.itertuples(index=False, name=None)]
         cur.executemany(insert_sql, data)
         conn.commit()
@@ -141,8 +135,20 @@ def append_snapshot(table_full_name: str, insert_sql: str, df: pd.DataFrame):
         conn.close()
 
 
+def get_pk_columns(cur, schema: str, table: str) -> set:
+    cur.execute("""
+        SELECT COLUMN_NAME
+        FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+        WHERE TABLE_SCHEMA = %s
+          AND TABLE_NAME = %s
+          AND CONSTRAINT_NAME = 'PRIMARY'
+        ORDER BY ORDINAL_POSITION
+    """, (schema, table))
+    return {row[0] for row in cur.fetchall()}
+
+
 # ═════════════════════════════════════════════════════════════════════════════
-# 1) OCUPAÇÃO MENSAL POR CASA (via API Streamline) — tb_occupancy_houses
+# 1) OCUPAÇÃO MENSAL POR CASA (via API Streamline)
 # ═════════════════════════════════════════════════════════════════════════════
 def make_payload_calendar(unit_id: int, startdate: str, enddate: str):
     return {
@@ -288,11 +294,11 @@ def create_occupancy_houses_table():
             `occupancy_rate`       DECIMAL(5,4) NULL,
             `days_occupied`        INT          NULL,
             `days_in_month`        INT          NULL,
-            `days_elapsed`         INT          NULL COMMENT 'Dias do mes ja passados ate hoje (inclusive). Use para denominador do YTD.',
-            `days_occupied_past`   INT          NULL COMMENT 'Dias ocupados que ja ocorreram (<= hoje). Numerador do YTD.',
-            `days_occupied_future` INT          NULL COMMENT 'Dias ocupados ainda no futuro (> hoje).',
-            `is_complete_month`    TINYINT(1)   NULL COMMENT '1 = mes inteiro ja passou.',
-            `is_future_month`      TINYINT(1)   NULL COMMENT '1 = mes ainda nao comecou.',
+            `days_elapsed`         INT          NULL,
+            `days_occupied_past`   INT          NULL,
+            `days_occupied_future` INT          NULL,
+            `is_complete_month`    TINYINT(1)   NULL,
+            `is_future_month`      TINYINT(1)   NULL,
             `extraction_date`      DATETIME     NOT NULL,
             PRIMARY KEY (`unit_id`, `year`, `month`, `extraction_date`),
             KEY `idx_extraction_date` (`extraction_date`)
@@ -363,9 +369,7 @@ def main_occupancy_houses():
             })
             print(
                 f"  Casa {unit_id} | {month_info['month_str']} | "
-                f"Ocupação: {occ['occupancy_rate']:.2%} ({occ['days_occupied']}/{occ['days_in_month']} dias) | "
-                f"Passado: {occ['days_occupied_past']} | Futuro: {occ['days_occupied_future']} | "
-                f"Elapsed: {occ['days_elapsed']}"
+                f"Ocupação: {occ['occupancy_rate']:.2%} ({occ['days_occupied']}/{occ['days_in_month']} dias)"
             )
 
     df = pd.DataFrame(results)
@@ -384,7 +388,7 @@ def main_occupancy_houses():
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 2) OCUPAÇÃO DIÁRIA POR RESERVA — tb_occupancy_reservation_day
+# 2) OCUPAÇÃO DIÁRIA POR RESERVA
 # ═════════════════════════════════════════════════════════════════════════════
 def create_occupancy_reservation_table():
     conn = mysql.connector.connect(**DB_CFG)
@@ -404,6 +408,7 @@ def create_occupancy_reservation_table():
             `enddate`         DATE          NOT NULL,
             `rate`            DECIMAL(12,2) NULL     COMMENT 'price_nightly / days_number',
             `extraction_date` DATETIME      NOT NULL,
+            PRIMARY KEY (`unit_id`, `confirmation_id`, `occupied_date`, `extraction_date`),
             KEY `idx_confirmation_id` (`confirmation_id`),
             KEY `idx_occupied_date`   (`occupied_date`),
             KEY `idx_unit_date`       (`unit_id`, `occupied_date`),
@@ -423,6 +428,30 @@ def create_occupancy_reservation_table():
                 AFTER `enddate`
             """)
             print("[MIGRATE] Coluna `rate` adicionada.")
+
+        # ── MIGRAÇÃO DA PRIMARY KEY ─────────────────────────────────────────
+        # A PK precisa incluir extraction_date para permitir múltiplos
+        # snapshots da mesma reserva ao longo dos dias (append diário).
+        expected_pk = {"unit_id", "confirmation_id", "occupied_date", "extraction_date"}
+        current_pk  = get_pk_columns(cur, DEST_SCHEMA, TB_OCCUPANCY_RESERVATION_DAY)
+
+        if current_pk and current_pk != expected_pk:
+            print(f"[MIGRATE] PK atual = {sorted(current_pk)}")
+            print(f"[MIGRATE] PK esperada = {sorted(expected_pk)}")
+            print("[MIGRATE] Recriando PRIMARY KEY...")
+            cur.execute(f"ALTER TABLE `{DEST_SCHEMA}`.`{TB_OCCUPANCY_RESERVATION_DAY}` DROP PRIMARY KEY")
+            cur.execute(f"""
+                ALTER TABLE `{DEST_SCHEMA}`.`{TB_OCCUPANCY_RESERVATION_DAY}`
+                ADD PRIMARY KEY (`unit_id`, `confirmation_id`, `occupied_date`, `extraction_date`)
+            """)
+            print("[MIGRATE] PRIMARY KEY atualizada.")
+        elif not current_pk:
+            print("[MIGRATE] Tabela sem PRIMARY KEY. Adicionando...")
+            cur.execute(f"""
+                ALTER TABLE `{DEST_SCHEMA}`.`{TB_OCCUPANCY_RESERVATION_DAY}`
+                ADD PRIMARY KEY (`unit_id`, `confirmation_id`, `occupied_date`, `extraction_date`)
+            """)
+            print("[MIGRATE] PRIMARY KEY adicionada.")
 
         conn.commit()
     finally:
@@ -504,7 +533,14 @@ def build_daily_occupancy_rows(df_reservas: pd.DataFrame) -> pd.DataFrame:
                 "extraction_date": extraction_date,
             })
 
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+
+    # Garantia anti-duplicata dentro do próprio snapshot
+    df = df.drop_duplicates(
+        subset=["unit_id", "confirmation_id", "occupied_date", "extraction_date"],
+        keep="last",
+    )
+    return df
 
 
 def main_occupancy_reservation_day():
@@ -534,7 +570,7 @@ def main_occupancy_reservation_day():
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# DAG UNIFICADA
+# DAG ÚNICA
 # ═════════════════════════════════════════════════════════════════════════════
 SP_TZ = pendulum.timezone("America/Sao_Paulo")
 
@@ -554,6 +590,5 @@ with DAG(
     def task_occupancy_reservation_day():
         main_occupancy_reservation_day()
 
-    # Rodam em paralelo - são independentes (banco diferente de campos)
     task_occupancy_houses()
     task_occupancy_reservation_day()
