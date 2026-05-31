@@ -782,20 +782,17 @@ def aloha_apply_changes(df_changes: pd.DataFrame):
             reserva = str(row["Reservation #"])
             print(f"Processando reserva {reserva}")
 
-            # FIX: navega para orders e espera a página carregar antes de clicar em clear
             page.goto(ALOHA_ORDERS_URL, wait_until="domcontentloaded", timeout=60000)
             page.wait_for_selector("a[href='/orders/index/clear']", timeout=30000)
 
-            # FIX: usa expect_navigation para o clear (dispara navegação)
-            page.click("a[href='/orders/index/clear']", timeout=60000, no_wait_after=True)
+            page.click("a[href='/orders/index/clear']", timeout=60000)
+            page.wait_for_load_state("domcontentloaded", timeout=60000)
             page.wait_for_selector("#filterFilter2", timeout=30000)
 
             page.select_option("#filterFilter2", "1")  # Aguardando
             page.fill("#filterFilter5", reserva)
 
-            # FIX: usa expect_navigation para o search (pode disparar navegação)
             page.click("//button[contains(., 'search')]", no_wait_after=True)
-            # Aguarda os resultados aparecerem (tabela ou mensagem de "não encontrado")
             page.wait_for_selector(
                 "table tbody tr, .alert, div.dataTables_empty",
                 timeout=30000,
