@@ -72,16 +72,14 @@ REPORT_END_DAYS_FORWARD = 85
 # --- Google OAuth ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # /opt/airflow/dags
 TOKENS_DIR = os.path.join(BASE_DIR, "Tokens")
-CREDENTIALS_FILE = os.path.join(TOKENS_DIR, "credentials.json")  # mantido (útil p/ re-gerar token fora do Airflow)
+CREDENTIALS_FILE = os.path.join(TOKENS_DIR, "credentials.json")
 
-# Sheets (MESMO padrão do WorkOrders)
 SHEETS_SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 ]
 SHEETS_TOKEN_FILE = os.path.join(TOKENS_DIR, "sheets_token.json")
 
-# Gmail (MESMO token que já funciona)
 GMAIL_SCOPES = [
     "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/gmail.send",
@@ -131,6 +129,9 @@ DAG_ID = "ALOHA_PIPELINE"
 DAG_SCHEDULE = "0 7 * * *"
 DAG_START_DATE = pendulum.datetime(2025, 9, 23, 8, 0, tz=SP_TZ)
 
+# Constantes para navegação em campos de data (equivalente ao Selenium ActionChains)
+ARROW_LEFT = "\ue012"
+
 
 # ==========================
 # GOOGLE AUTH (SEM LOGIN INTERATIVO)
@@ -141,7 +142,6 @@ def load_credentials(token_file: str, scopes: List[str]) -> Credentials:
 
     creds = Credentials.from_authorized_user_file(token_file, scopes)
 
-    # Se expirado, tenta refresh
     if creds and creds.expired and creds.refresh_token:
         try:
             creds.refresh(Request())
@@ -207,7 +207,6 @@ def read_sheet_as_df(sheet_id: str, tab_name: str) -> pd.DataFrame:
     raw_header = values[0]
     rows = values[1:]
 
-    # Header "limpo": garante string, remove None, e evita header vazio
     header = []
     for i, h in enumerate(raw_header):
         h = "" if h is None else str(h).strip()
@@ -215,7 +214,6 @@ def read_sheet_as_df(sheet_id: str, tab_name: str) -> pd.DataFrame:
             h = f"__col_{i+1}"
         header.append(h)
 
-    # Se o header tiver duplicados, renomeia com sufixo
     seen = {}
     fixed_header = []
     for h in header:
@@ -229,32 +227,26 @@ def read_sheet_as_df(sheet_id: str, tab_name: str) -> pd.DataFrame:
 
     ncols = len(header)
 
-    # Normaliza cada linha para ter exatamente ncols colunas
     norm_rows = []
     for r in rows:
         if r is None:
             r = []
-        # garante lista
         if not isinstance(r, list):
             r = [r]
-
         if len(r) < ncols:
             r = r + [""] * (ncols - len(r))
         elif len(r) > ncols:
             r = r[:ncols]
-
         norm_rows.append(r)
 
     df = pd.DataFrame(norm_rows, columns=header)
 
-    # Converte colunas de data (quando existirem)
     date_cols = ["Cleaning Date", "Check-In Date", "Check-Out Date", "Next Arrival"]
     for c in date_cols:
         if c in df.columns:
             df[c] = pd.to_datetime(df[c], errors="coerce", dayfirst=True)
 
     return df
-
 
 
 def write_df_to_sheet(df: pd.DataFrame, sheet_id: str, tab_name: str):
@@ -319,7 +311,7 @@ def fetch_housekeeping_cleaning_report(session: requests.Session) -> dict:
 
 
 # =========================
-# FLAGS: mesma lógica
+# FLAGS
 # =========================
 def integrate_flags(property_list_wordpress: pd.DataFrame) -> pd.DataFrame:
     col_flags = "flags.flag"
@@ -350,9 +342,11 @@ def integrate_flags(property_list_wordpress: pd.DataFrame) -> pd.DataFrame:
             return flag_name
 
         flags_details["flag_final"] = flags_details.apply(format_flag, axis=1)
+
+        # FIX: sem filtro de vazio no join, igual ao Jupyter original
         flags_agg = (
             flags_details.groupby("confirmation_id")["flag_final"]
-            .apply(lambda x: ", ".join([v for v in x if v]))
+            .apply(lambda x: ", ".join(x))
             .reset_index()
         )
 
@@ -370,12 +364,13 @@ def build_mysql_engine():
     url = URL.create(
         drivername="mysql+pymysql",
         username=MYSQL_USER,
-        password=MYSQL_PASSWORD,   # pode ter @, !, etc.
+        password=MYSQL_PASSWORD,
         host=MYSQL_HOST,
         database=MYSQL_DATABASE,
         query={"charset": "utf8mb4"},
     )
     return create_engine(url, pool_pre_ping=True, pool_recycle=3600)
+
 
 def enrich_with_mysql(merged_df: pd.DataFrame) -> pd.DataFrame:
     engine = build_mysql_engine()
@@ -409,9 +404,10 @@ def enrich_with_mysql(merged_df: pd.DataFrame) -> pd.DataFrame:
     )
 
     merged_df["unit_id"] = pd.to_numeric(merged_df.get("unit_id"), errors="coerce").astype("Int64")
-
     df_conc["id_house"] = pd.to_numeric(df_conc.get("id_house"), errors="coerce").astype("Int64")
 
+    # FIX: merge feito UMA única vez (o código anterior fazia duas vezes,
+    # gerando colunas conc_x / conc_y e deixando Unit com valor vazio)
     merged_df = merged_df.merge(
         df_conc,
         left_on="unit_id",
@@ -419,11 +415,10 @@ def enrich_with_mysql(merged_df: pd.DataFrame) -> pd.DataFrame:
         how="left",
     )
 
-    merged_df = merged_df.merge(df_conc, left_on="unit_id", right_on="id_house", how="left")
-
+    # FIX: usa row['unit_name'] e row['conc'] diretamente (sem .get()),
+    # igual ao Jupyter — agora seguro pois o merge só ocorre uma vez
     merged_df["Unit"] = merged_df.apply(
-        lambda row: f"{row.get('unit_name','')} ({row.get('conc','')})".strip(),
-        axis=1,
+        lambda row: f"{row['unit_name']} ({row['conc']})", axis=1
     )
 
     merged_df["Unit"] = merged_df["Unit"].replace(
@@ -484,7 +479,6 @@ def build_final_df(merged_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def write_excels_local(final_df: pd.DataFrame) -> pd.DataFrame:
-    # salva full
     with pd.ExcelWriter(
         EXCEL_FULL_LOCAL,
         engine="xlsxwriter",
@@ -493,7 +487,6 @@ def write_excels_local(final_df: pd.DataFrame) -> pd.DataFrame:
     ) as w:
         final_df.to_excel(w, sheet_name="Reservas", index=False)
 
-    # salva upload (Cleaning Date >= hoje)
     today = datetime.today().replace(hour=0, minute=0, second=0, microsecond=0)
     filtered_df = final_df[final_df["Cleaning Date"] >= today].copy()
 
@@ -507,35 +500,16 @@ def write_excels_local(final_df: pd.DataFrame) -> pd.DataFrame:
 
     return filtered_df
 
+
 def normalize_reservation_key(df: pd.DataFrame, col: str = "Reservation #") -> pd.DataFrame:
-    """
-    Normaliza a coluna de chave do merge para string consistente.
-    - Remove espaços
-    - Converte floats tipo 33761.0 -> "33761"
-    - Converte NaN -> ""
-    """
     if df is None or df.empty:
         return df
-
     if col not in df.columns:
-        # não cria coluna aqui, só retorna
         return df
 
-    s = df[col]
-
-    # Primeiro converte pra string preservando NaN
-    s = s.astype("string")
-
-    # Tira espaços e normaliza
-    s = s.str.strip()
-
-    # Corrige casos vindos como "33761.0"
-    # (somente quando for número com .0 no final)
+    s = df[col].astype("string").str.strip()
     s = s.str.replace(r"^(\d+)\.0$", r"\1", regex=True)
-
-    # Se vier vazio/NA vira ""
     s = s.fillna("")
-
     df[col] = s
     return df
 
@@ -562,7 +536,7 @@ def compute_changes(df_atual: pd.DataFrame, df_anterior: pd.DataFrame) -> Tuple[
         df_anterior,
         on="Reservation #",
         suffixes=("_atual", "_anterior"),
-)
+    )
 
     colunas_datas = [
         "Check-In Date_atual", "Check-In Date_anterior",
@@ -683,9 +657,6 @@ def compute_changes(df_atual: pd.DataFrame, df_anterior: pd.DataFrame) -> Tuple[
 # PLAYWRIGHT HELPERS (Aloha)
 # =========================
 def build_browser():
-    """
-    Retorna (playwright, browser, context, page)
-    """
     playwright = sync_playwright().start()
     browser = playwright.chromium.launch(
         headless=True,
@@ -696,27 +667,21 @@ def build_browser():
     return playwright, browser, context, page
 
 
-
 def aloha_login(page):
-    # 1) abre login
     page.goto(ALOHA_LOGIN_URL, wait_until="domcontentloaded", timeout=60000)
 
-    # Debug básico (vai pro log do Airflow)
     print("[ALOHA] URL após goto:", page.url)
     try:
         print("[ALOHA] title:", page.title())
     except Exception:
         pass
 
-    # 2) espera inputs existirem
     page.wait_for_selector("#UserUsername", timeout=60000)
     page.wait_for_selector("#UserPassword", timeout=60000)
 
-    # 3) preenche
     page.fill("#UserUsername", ALOHA_EMAIL)
     page.fill("#UserPassword", ALOHA_SENHA)
 
-    # 4) tenta clicar no botão de várias formas
     clicked = False
     selectors = [
         "//button[normalize-space()='Entrar']",
@@ -738,7 +703,6 @@ def aloha_login(page):
             continue
 
     if not clicked:
-        # fallback: submit via Enter no campo senha
         try:
             page.focus("#UserPassword")
             page.keyboard.press("Enter")
@@ -746,20 +710,17 @@ def aloha_login(page):
         except Exception:
             clicked = False
 
-    # 5) confirma login
     try:
         page.wait_for_selector("a[data-click='NewOrderUploads']", timeout=60000)
         print("[ALOHA] Login OK")
         return True
     except PlaywrightTimeoutError:
-        # DEBUG PESADO: salva evidências no /tmp (no container)
         ts = int(time.time())
         try:
             page.screenshot(path=f"/tmp/aloha_login_fail_{ts}.png", full_page=True)
             print(f"[ALOHA] screenshot salvo em /tmp/aloha_login_fail_{ts}.png")
         except Exception as e:
             print("[ALOHA] falhou screenshot:", repr(e))
-
         try:
             html = page.content()
             with open(f"/tmp/aloha_login_fail_{ts}.html", "w", encoding="utf-8") as f:
@@ -767,14 +728,41 @@ def aloha_login(page):
             print(f"[ALOHA] html salvo em /tmp/aloha_login_fail_{ts}.html")
         except Exception as e:
             print("[ALOHA] falhou salvar html:", repr(e))
-
         print("[ALOHA] URL final:", page.url)
         try:
             print("[ALOHA] title final:", page.title())
         except Exception:
             pass
-
         raise RuntimeError("Falha no login do Aloha: não encontrou NewOrderUploads após submit.")
+
+
+# =========================
+# ALOHA: preenche campo de data via teclado
+# (replica o ActionChains do Selenium: ARROW_LEFT x3 + ddmmyyyy)
+# =========================
+def _fill_date_field(page, field_id: str, dt: pd.Timestamp):
+    """
+    Preenche um campo de data do Aloha usando sequência de teclado,
+    idêntico ao comportamento do Selenium ActionChains original:
+      1. clica no campo
+      2. pressiona ARROW_LEFT 3 vezes (vai para o início do campo mm/dd/yyyy)
+      3. digita ddmmyyyy
+    """
+    day_str   = dt.strftime("%d")
+    month_str = dt.strftime("%m")
+    year_str  = dt.strftime("%Y")
+    date_str  = day_str + month_str + year_str  # ex: "15062026"
+
+    field = page.locator(f"#{field_id}")
+    field.click()
+    time.sleep(0.3)
+
+    # Vai para o início do campo (3x ARROW_LEFT, igual ao Selenium)
+    for _ in range(3):
+        page.keyboard.press("ArrowLeft")
+
+    page.keyboard.type(date_str)
+    print(f"[ALOHA] Campo #{field_id} preenchido com {day_str}/{month_str}/{year_str}")
 
 
 # =========================
@@ -794,14 +782,20 @@ def aloha_apply_changes(df_changes: pd.DataFrame):
             reserva = str(row["Reservation #"])
             print(f"Processando reserva {reserva}")
 
-            page.goto(ALOHA_ORDERS_URL, timeout=60000)
+            # FIX: navega para orders e espera a página carregar antes de clicar em clear
+            page.goto(ALOHA_ORDERS_URL, wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_selector("a[href='/orders/index/clear']", timeout=30000)
 
-            # limpa filtros e pesquisa
-            page.click("a[href='/orders/index/clear']", timeout=60000)
-            page.wait_for_load_state("domcontentloaded", timeout=60000)
+            # FIX: usa expect_navigation para o clear (dispara navegação)
+            with page.expect_navigation(wait_until="domcontentloaded", timeout=60000):
+                page.click("a[href='/orders/index/clear']")
+
             page.select_option("#filterFilter2", "1")  # Aguardando
             page.fill("#filterFilter5", reserva)
-            page.click("//button[contains(., 'search')]")
+
+            # FIX: usa expect_navigation para o search (pode disparar navegação)
+            with page.expect_navigation(wait_until="domcontentloaded", timeout=60000):
+                page.click("//button[contains(., 'search')]")
 
             # CANCELADA
             if pd.isna(row["Check-In Date_atual"]):
@@ -814,7 +808,6 @@ def aloha_apply_changes(df_changes: pd.DataFrame):
                     print(f"Reserva {reserva} não encontrada")
                     continue
 
-                # IMPORTANTE: registrar handler antes do clique que abre o dialog
                 page.once("dialog", lambda d: d.accept())
                 page.click("//a[@data-toggle='delete' and contains(., 'Delete')]")
                 print(f"Reserva {reserva} deletada")
@@ -829,20 +822,22 @@ def aloha_apply_changes(df_changes: pd.DataFrame):
                 print(f"Reserva {reserva} não encontrada para edição")
                 continue
 
-            # Atualiza Next Arrival
+            # FIX: usa _fill_date_field (igual ao ActionChains do Selenium)
+            # em vez de page.fill com formato ISO que o campo pode não aceitar
             if row["Next Arrival_atual"] != row["Next Arrival_anterior"]:
                 dt = pd.to_datetime(row["Next Arrival_atual"], errors="coerce")
                 if pd.notna(dt):
-                    # formato esperado: ddmmyyyy (como seu fluxo antigo)
-                    page.fill("#OrderDtNextCheckinGuest", dt.strftime("%Y-%m-%d"))
+                    _fill_date_field(page, "OrderDtNextCheckinGuest", dt)
 
-            # Atualiza Cleaning Date
             if row["Cleaning Date_atual"] != row["Cleaning Date_anterior"]:
                 dt = pd.to_datetime(row["Cleaning Date_atual"], errors="coerce")
                 if pd.notna(dt):
-                    page.fill("#OrderDtCheckoutGuest", dt.strftime("%Y-%m-%d"))
+                    _fill_date_field(page, "OrderDtCheckoutGuest", dt)
 
-            page.click("//button[@type='submit' and contains(@class,'btn-primary')]")
+            # FIX: seletor exato do botão save, igual ao Jupyter original
+            page.click(
+                "//button[@class='btn btn-primary' and @type='submit' and @data-hide='modal']"
+            )
             print(f"Reserva {reserva} atualizada")
             time.sleep(1)
 
@@ -908,18 +903,14 @@ def fazer_upload(page, cliente: str, caminho_arquivo: str, qtd_linhas: int):
     try:
         print("[ALOHA][UPLOAD] URL atual (antes de abrir modal):", page.url)
 
-        # Garante que estamos na tela de Orders
         if "/orders" not in page.url:
             page.goto(ALOHA_ORDERS_URL, wait_until="domcontentloaded", timeout=60000)
 
-        # Fecha modal antigo, se existir
         close_modal_if_open()
 
-        # Abre modal "Add Orders"
         page.wait_for_selector("a[data-click='NewOrderUploads']", timeout=60000)
         page.click("a[data-click='NewOrderUploads']")
 
-        # Espera form do modal
         page.wait_for_selector("#OrderUploadAddForm", timeout=30000)
 
         modal = page.locator(".modal-content").first
@@ -932,12 +923,10 @@ def fazer_upload(page, cliente: str, caminho_arquivo: str, qtd_linhas: int):
         inp_rows.wait_for(state="visible", timeout=30000)
         inp_file.wait_for(state="visible", timeout=30000)
 
-        # Preenche
         sel_company.select_option(label=cliente)
         inp_rows.fill(str(int(qtd_linhas)))
         inp_file.set_input_files(caminho_arquivo)
 
-        # Dispara eventos de validação (JS)
         try:
             sel_company.dispatch_event("change")
             inp_rows.dispatch_event("input")
@@ -946,7 +935,6 @@ def fazer_upload(page, cliente: str, caminho_arquivo: str, qtd_linhas: int):
         except Exception:
             pass
 
-        # Aguarda arquivo estar setado
         page.wait_for_function(
             """() => {
                 const el = document.querySelector("#OrderUploadFile");
@@ -955,14 +943,12 @@ def fazer_upload(page, cliente: str, caminho_arquivo: str, qtd_linhas: int):
             timeout=30000,
         )
 
-        # Clica continue (forçado)
         print("[ALOHA][UPLOAD] clicando em continue...")
         try:
             with page.expect_navigation(wait_until="domcontentloaded", timeout=90000):
                 btn_continue.click(force=True)
             print("[ALOHA][UPLOAD] Upload criado:", page.url)
         except Exception as nav_err:
-            # Se o modal sumiu mas a navegação não foi detectada, tenta wait_for_url como fallback
             print(f"[ALOHA][UPLOAD] expect_navigation falhou ({repr(nav_err)}), tentando wait_for_url...")
             try:
                 page.wait_for_url("**/order_uploads/edit/**", timeout=30000)
@@ -971,31 +957,49 @@ def fazer_upload(page, cliente: str, caminho_arquivo: str, qtd_linhas: int):
                 dump_debug("no_edit_page")
                 log_message += f"Upload para {cliente}: não chegou na página /order_uploads/edit.\n"
                 return casas_nao_cadastradas, log_message
-            
-            if "/order_uploads/edit/" not in page.url:
-                dump_debug("no_edit_page")
-                log_message += f"Upload para {cliente}: URL inesperada após submit: {page.url}\n"
-                return casas_nao_cadastradas, log_message
 
-        # Coleta mensagens de tela (erro/aviso/sucesso)
+        if "/order_uploads/edit/" not in page.url:
+            dump_debug("no_edit_page")
+            log_message += f"Upload para {cliente}: URL inesperada após submit: {page.url}\n"
+            return casas_nao_cadastradas, log_message
+
         alerts = collect_alerts()
         if alerts:
             print("[ALOHA][UPLOAD] mensagens:", " | ".join(alerts))
 
-        # Se tiver alerta de erro, considera falha
         if any(("error" in a.lower()) or ("invalid" in a.lower()) or ("failed" in a.lower()) for a in alerts):
             dump_debug("upload_error_alert")
             log_message += f"Upload para {cliente} falhou. Mensagens: {' | '.join(alerts)}\n"
             return casas_nao_cadastradas, log_message
 
-        # Tenta coletar “casas não cadastradas” (se aparecerem nessa página)
+        # FIX: aguarda o painel carregar e clica em "Importar" antes de coletar casas,
+        # igual ao Selenium original — a lista de casas só aparece após o Importar
         try:
+            page.wait_for_selector("div.panel-body", timeout=30000)
+        except PlaywrightTimeoutError:
+            pass
+
+        # Coleta casas não cadastradas (aparecem antes do Importar)
+        try:
+            page.wait_for_selector("div.row div.col-md-3 small", timeout=10000)
             casas_elements = page.query_selector_all("div.row div.col-md-3 small")
             casas_nao_cadastradas = [c.inner_text().strip() for c in casas_elements if c.inner_text().strip()]
+            print(f"[ALOHA][UPLOAD] Casas não cadastradas coletadas: {len(casas_nao_cadastradas)}")
         except Exception:
             casas_nao_cadastradas = []
 
-        log_message += f"Upload para o cliente {cliente} realizado com sucesso (sem etapa Importar).\n"
+        # FIX: clica em "Importar" igual ao Selenium original
+        try:
+            importar_btn = page.locator("//button[contains(., 'Importar')]")
+            importar_btn.wait_for(state="visible", timeout=15000)
+            importar_btn.click()
+            print(f"[ALOHA][UPLOAD] Botão Importar clicado para {cliente}.")
+            log_message += f"Upload para o cliente {cliente} realizado com sucesso!\n"
+        except Exception as e:
+            # Se não houver botão Importar, não há novas reservas (comportamento igual ao Selenium)
+            print(f"[ALOHA][UPLOAD] Sem botão Importar para {cliente}: {repr(e)}")
+            log_message += f"Sem novas reservas para importar para o cliente {cliente}.\n"
+
         return casas_nao_cadastradas, log_message
 
     except Exception as e:
@@ -1011,17 +1015,16 @@ def aloha_upload_and_collect_missing():
     try:
         aloha_login(page)
 
-        # qtd linhas = linhas do excel full + 50
         try:
             qtd_linhas = pd.read_excel(EXCEL_FULL_LOCAL).shape[0] + 50
         except Exception:
-            qtd_linhas = 5000  # fallback
+            qtd_linhas = 5000
         print("qtd_linhas:", qtd_linhas)
 
         print("Iniciando upload para ONE VACATION...")
         casas_one, log_one = fazer_upload(page, CLIENT_ONE, EXCEL_UPLOAD_LOCAL, qtd_linhas)
 
-        page.goto(ALOHA_ORDERS_URL, timeout=60000)
+        page.goto(ALOHA_ORDERS_URL, wait_until="domcontentloaded", timeout=60000)
         page.wait_for_selector("a[data-click='NewOrderUploads']", timeout=60000)
 
         print("Iniciando upload para SNOW BIRD...")
@@ -1103,7 +1106,6 @@ def pipeline_run():
     payload = fetch_housekeeping_cleaning_report(session)
 
     # 3) normaliza JSON em DataFrame
-    # cuidado: se estrutura vier diferente, estoura KeyError -> preferível falhar e ver log
     property_list_wordpress = pd.json_normalize(
         payload["data"],
         record_path=["reservations", "reservation"],
@@ -1151,8 +1153,8 @@ def pipeline_run():
         <p>Olá,</p>
         <p>Este é um e-mail enviado automaticamente pelo script.</p>
         <p><b>Upload Aloha foi finalizado:</b></p>
-        <p>{(log_one or "").replace("\\n","<br>")}</p>
-        <p>{(log_snow or "").replace("\\n","<br>")}</p>
+        <p>{(log_one or "").replace(chr(10), "<br>")}</p>
+        <p>{(log_snow or "").replace(chr(10), "<br>")}</p>
         <p><b>Reservas que sofreram alterações no último upload:</b></p>
         <p>{texto_html}</p>
         <p><b>Casas a cadastrar (presentes em ambos os uploads):</b></p>
@@ -1167,7 +1169,7 @@ def pipeline_run():
         recipient=EMAIL_RECIPIENTS,
         subject=EMAIL_SUBJECT,
         message_html=body,
-        attachment_path=EXCEL_UPLOAD_LOCAL,  # opcional
+        attachment_path=EXCEL_UPLOAD_LOCAL,
         sender=EMAIL_SENDER,
     )
 
