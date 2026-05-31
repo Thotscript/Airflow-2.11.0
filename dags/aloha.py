@@ -957,23 +957,25 @@ def fazer_upload(page, cliente: str, caminho_arquivo: str, qtd_linhas: int):
 
         # Clica continue (forçado)
         print("[ALOHA][UPLOAD] clicando em continue...")
-        btn_continue.click(force=True)
-
-        # Opcional: aguarda modal sumir (não é obrigatório, mas ajuda)
         try:
-            modal.wait_for(state="hidden", timeout=20000)
-            print("[ALOHA][UPLOAD] modal fechado.")
-        except Exception:
-            print("[ALOHA][UPLOAD] modal não fechou (ajax interno).")
-
-        # Aguarda cair na tela do upload criado (ex.: /order_uploads/edit/1354)
-        try:
-            page.wait_for_url("**/order_uploads/edit/**", timeout=90000)
+            with page.expect_navigation(wait_until="domcontentloaded", timeout=90000):
+                btn_continue.click(force=True)
             print("[ALOHA][UPLOAD] Upload criado:", page.url)
-        except Exception:
-            dump_debug("no_edit_page")
-            log_message += f"Upload para {cliente}: não chegou na página /order_uploads/edit.\n"
-            return casas_nao_cadastradas, log_message
+        except Exception as nav_err:
+            # Se o modal sumiu mas a navegação não foi detectada, tenta wait_for_url como fallback
+            print(f"[ALOHA][UPLOAD] expect_navigation falhou ({repr(nav_err)}), tentando wait_for_url...")
+            try:
+                page.wait_for_url("**/order_uploads/edit/**", timeout=30000)
+                print("[ALOHA][UPLOAD] Upload criado (fallback):", page.url)
+            except Exception:
+                dump_debug("no_edit_page")
+                log_message += f"Upload para {cliente}: não chegou na página /order_uploads/edit.\n"
+                return casas_nao_cadastradas, log_message
+            
+            if "/order_uploads/edit/" not in page.url:
+                dump_debug("no_edit_page")
+                log_message += f"Upload para {cliente}: URL inesperada após submit: {page.url}\n"
+                return casas_nao_cadastradas, log_message
 
         # Coleta mensagens de tela (erro/aviso/sucesso)
         alerts = collect_alerts()
