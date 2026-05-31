@@ -773,6 +773,7 @@ def aloha_apply_changes(df_changes: pd.DataFrame):
         print("Sem alterações/cancelamentos.")
         return
 
+    time.sleep(10)
     playwright, browser, context, page = build_browser()
 
     try:
@@ -782,11 +783,30 @@ def aloha_apply_changes(df_changes: pd.DataFrame):
             reserva = str(row["Reservation #"])
             print(f"Processando reserva {reserva}")
 
-            # Navega direto para /orders (equivale ao clear — reseta filtros)
-            page.goto(ALOHA_ORDERS_URL, wait_until="domcontentloaded", timeout=60000)
+            # Tenta navegar; se der ERR_CONNECTION_CLOSED, reloga
+            for nav_attempt in range(3):
+                try:
+                    page.goto(ALOHA_ORDERS_URL, wait_until="domcontentloaded", timeout=60000)
+                    break
+                except Exception as e:
+                    print(f"[ALOHA] Erro ao navegar (tentativa {nav_attempt+1}): {repr(e)}")
+                    if nav_attempt < 2:
+                        time.sleep(10)
+                        try:
+                            aloha_login(page)
+                        except Exception as login_err:
+                            print(f"[ALOHA] Falha ao relogar: {repr(login_err)}")
+                    else:
+                        print(f"Reserva {reserva} pulada após falhas de navegação")
+                        break
+            else:
+                continue
+
             page.wait_for_selector("#filterFilter2", timeout=30000)
 
-            page.select_option("#filterFilter2", "1")  # Aguardando
+            # FIX: busca sem filtro de status para garantir que encontra a reserva
+            # independente do status atual dela no Aloha
+            page.select_option("#filterFilter2", "")  # Todos os status
             page.fill("#filterFilter5", reserva)
 
             page.click("//button[contains(., 'search')]", no_wait_after=True)
@@ -820,8 +840,6 @@ def aloha_apply_changes(df_changes: pd.DataFrame):
                 print(f"Reserva {reserva} não encontrada para edição")
                 continue
 
-            # FIX: usa _fill_date_field (igual ao ActionChains do Selenium)
-            # em vez de page.fill com formato ISO que o campo pode não aceitar
             if row["Next Arrival_atual"] != row["Next Arrival_anterior"]:
                 dt = pd.to_datetime(row["Next Arrival_atual"], errors="coerce")
                 if pd.notna(dt):
@@ -832,7 +850,6 @@ def aloha_apply_changes(df_changes: pd.DataFrame):
                 if pd.notna(dt):
                     _fill_date_field(page, "OrderDtCheckoutGuest", dt)
 
-            # FIX: seletor exato do botão save, igual ao Jupyter original
             page.click(
                 "//button[@class='btn btn-primary' and @type='submit' and @data-hide='modal']"
             )
