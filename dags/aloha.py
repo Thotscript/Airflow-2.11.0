@@ -787,8 +787,8 @@ def aloha_apply_changes(df_changes: pd.DataFrame):
             page.wait_for_selector("a[href='/orders/index/clear']", timeout=30000)
 
             # FIX: usa expect_navigation para o clear (dispara navegação)
-            with page.expect_navigation(wait_until="domcontentloaded", timeout=60000):
-                page.click("a[href='/orders/index/clear']")
+            page.click("a[href='/orders/index/clear']", timeout=60000, no_wait_after=True)
+            page.wait_for_selector("#filterFilter2", timeout=30000)
 
             page.select_option("#filterFilter2", "1")  # Aguardando
             page.fill("#filterFilter5", reserva)
