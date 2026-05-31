@@ -802,6 +802,24 @@ def aloha_apply_changes(df_changes: pd.DataFrame):
             else:
                 continue
 
+            elements = page.evaluate("""() => {
+                const results = [];
+                document.querySelectorAll('input, select, button, a').forEach(el => {
+                    results.push({
+                        tag: el.tagName,
+                        id: el.id || '',
+                        name: el.name || '',
+                        type: el.type || '',
+                        class: el.className || '',
+                        text: (el.innerText || el.value || '').trim().slice(0, 50),
+                        href: el.href || ''
+                    });
+                });
+                return results;
+            }""")
+            for el in elements:
+                print(f"[DEBUG ELEM] {el}")
+
             page.wait_for_selector("#filterFilter2", timeout=30000)
 
             # FIX: busca sem filtro de status para garantir que encontra a reserva
