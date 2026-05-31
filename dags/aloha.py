@@ -785,22 +785,11 @@ def aloha_apply_changes(df_changes: pd.DataFrame):
             page.goto(ALOHA_ORDERS_URL, wait_until="domcontentloaded", timeout=60000)
             page.wait_for_selector("a[href='/orders/index/clear']", timeout=30000)
 
-            # DEBUG TEMPORÁRIO — remover após identificar o seletor correto
-            ts = int(time.time())
-            page.screenshot(path=f"/tmp/aloha_after_clear_{ts}.png", full_page=True)
-            with open(f"/tmp/aloha_after_clear_{ts}.html", "w", encoding="utf-8") as f:
-                f.write(page.content())
-            print(f"[DEBUG] URL após clear: {page.url}")
-            print(f"[DEBUG] Screenshot: /tmp/aloha_after_clear_{ts}.png")
-            print(f"[DEBUG] HTML: /tmp/aloha_after_clear_{ts}.html")
-            
+            page.click("a[href='/orders/index/clear']", timeout=60000, no_wait_after=True)
+            page.wait_for_url("**/orders**", wait_until="domcontentloaded", timeout=60000)
             page.wait_for_selector("#filterFilter2", timeout=30000)
 
-            page.click("a[href='/orders/index/clear']", timeout=60000)
-            page.wait_for_load_state("domcontentloaded", timeout=60000)
-            page.wait_for_selector("#filterFilter2", timeout=30000)
-
-            page.select_option("#filterFilter2", "1")  # Aguardando
+            page.select_option("#filterFilter2", "1")
             page.fill("#filterFilter5", reserva)
 
             page.click("//button[contains(., 'search')]", no_wait_after=True)
