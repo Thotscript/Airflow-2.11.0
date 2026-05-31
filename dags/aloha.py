@@ -794,8 +794,12 @@ def aloha_apply_changes(df_changes: pd.DataFrame):
             page.fill("#filterFilter5", reserva)
 
             # FIX: usa expect_navigation para o search (pode disparar navegação)
-            with page.expect_navigation(wait_until="domcontentloaded", timeout=60000):
-                page.click("//button[contains(., 'search')]")
+            page.click("//button[contains(., 'search')]", no_wait_after=True)
+            # Aguarda os resultados aparecerem (tabela ou mensagem de "não encontrado")
+            page.wait_for_selector(
+                "table tbody tr, .alert, div.dataTables_empty",
+                timeout=30000,
+            )
 
             # CANCELADA
             if pd.isna(row["Check-In Date_atual"]):
