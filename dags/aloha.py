@@ -782,14 +782,11 @@ def aloha_apply_changes(df_changes: pd.DataFrame):
             reserva = str(row["Reservation #"])
             print(f"Processando reserva {reserva}")
 
+            # Navega direto para /orders (equivale ao clear — reseta filtros)
             page.goto(ALOHA_ORDERS_URL, wait_until="domcontentloaded", timeout=60000)
-            page.wait_for_selector("a[href='/orders/index/clear']", timeout=30000)
-
-            page.click("a[href='/orders/index/clear']", timeout=60000, no_wait_after=True)
-            page.wait_for_url("**/orders**", wait_until="domcontentloaded", timeout=60000)
             page.wait_for_selector("#filterFilter2", timeout=30000)
 
-            page.select_option("#filterFilter2", "1")
+            page.select_option("#filterFilter2", "1")  # Aguardando
             page.fill("#filterFilter5", reserva)
 
             page.click("//button[contains(., 'search')]", no_wait_after=True)
