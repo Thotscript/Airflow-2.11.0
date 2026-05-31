@@ -787,6 +787,13 @@ def aloha_apply_changes(df_changes: pd.DataFrame):
             for nav_attempt in range(3):
                 try:
                     page.goto(ALOHA_ORDERS_URL, wait_until="domcontentloaded", timeout=60000)
+                    
+                    # Detecta redirecionamento para login
+                    if "users/login" in page.url or "UserUsername" in page.content():
+                        print(f"[ALOHA] Sessão expirada, relogando (tentativa {nav_attempt+1})...")
+                        aloha_login(page)
+                        page.goto(ALOHA_ORDERS_URL, wait_until="domcontentloaded", timeout=60000)
+                    
                     break
                 except Exception as e:
                     print(f"[ALOHA] Erro ao navegar (tentativa {nav_attempt+1}): {repr(e)}")
@@ -801,7 +808,7 @@ def aloha_apply_changes(df_changes: pd.DataFrame):
                         break
             else:
                 continue
-
+            
             elements = page.evaluate("""() => {
                 const results = [];
                 document.querySelectorAll('input, select, button, a').forEach(el => {
